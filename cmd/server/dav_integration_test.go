@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -58,8 +59,31 @@ func parseMultiStatus(t *testing.T, body string) multistatusDoc {
 	if err := xml.Unmarshal([]byte(body), &doc); err != nil {
 		t.Fatalf("multistatus is not valid XML: %v\nbody: %s", err, body)
 	}
+	assertDeclaredPrefixes(t, body)
 	return doc
 }
+
+// assertDeclaredPrefixes checks that every element prefix used in the
+// document is declared on the root element. Go's decoder is lenient with
+// unbound prefixes, so without this a multistatus that a strict parser (and
+// some DAV clients) would reject slips through the tests.
+func assertDeclaredPrefixes(t *testing.T, body string) {
+	t.Helper()
+	declared := map[string]bool{}
+	for _, m := range declaredRe.FindAllStringSubmatch(body, -1) {
+		declared[m[1]] = true
+	}
+	for _, m := range usedRe.FindAllStringSubmatch(body, -1) {
+		if !declared[m[1]] {
+			t.Errorf("prefix %q is used but not declared on the root element", m[1])
+		}
+	}
+}
+
+var (
+	declaredRe = regexp.MustCompile(`xmlns:([A-Za-z0-9]+)=`)
+	usedRe     = regexp.MustCompile(`</?([A-Za-z0-9]+):[A-Za-z0-9]`)
+)
 
 // propsOf returns the properties answered with 200 for one href, keyed by
 // "space local".
@@ -358,6 +382,146 @@ func TestReportCalendarQueryAndMultiget(t *testing.T) {
 	}
 	if !strings.Contains(body, "UID:e1") {
 		t.Errorf("calendar-multiget did not return the object: %s", body)
+	}
+}
+
+// TestProppatchStoresClientProperties covers the issue #3 behaviour: renaming
+// a collection and setting a client property (calendar-color) via PROPPATCH
+// must be persisted in .Radicale.props with the canonical Radicale keys and
+// served back by PROPFIND.
+func TestProppatchStoresClientProperties(t *testing.T) {
+	srv, dataDir := newTestServer(t)
+	coll := srv.URL + "/caldav/alice/def-calendar/"
+
+	patch := `<?xml version="1.0" encoding="utf-8"?>
+<D:propertyupdate xmlns:D="DAV:" xmlns:IC="http://apple.com/ns/ical/">
+  <D:set><D:prop>
+    <D:displayname>Calendario renombrado</D:displayname>
+    <IC:calendar-color>#3498db</IC:calendar-color>
+  </D:prop></D:set>
+</D:propertyupdate>`
+	resp, body := do(t, "PROPPATCH", coll, patch, map[string]string{
+		"Content-Type": "application/xml; charset=utf-8",
+	})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("PROPPATCH = %d, want 207: %s", resp.StatusCode, body)
+	}
+	ms := parseMultiStatus(t, body)
+	if got := propsOf(ms, "/caldav/alice/def-calendar/"); len(got) != 2 {
+		t.Errorf("PROPPATCH answered 200 for %d properties, want 2: %v", len(got), keysOf(got))
+	}
+
+	// Persisted with the canonical Radicale keys, no invented prefix.
+	b, err := os.ReadFile(filepath.Join(dataDir, "collection-root", "alice", "def-calendar", ".Radicale.props"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"D:displayname": "Calendario renombrado"`) {
+		t.Errorf("props file missing the renamed displayname: %s", b)
+	}
+	if !strings.Contains(string(b), `"ICAL:calendar-color": "#3498db"`) {
+		t.Errorf("props file missing the canonical ICAL key: %s", b)
+	}
+
+	// And served back by PROPFIND, in the right namespaces.
+	req := `<?xml version="1.0"?>
+<D:propfind xmlns:D="DAV:" xmlns:IC="http://apple.com/ns/ical/">
+  <D:prop><D:displayname/><IC:calendar-color/></D:prop>
+</D:propfind>`
+	resp, body = do(t, "PROPFIND", coll, req, map[string]string{"Depth": "0"})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND = %d: %s", resp.StatusCode, body)
+	}
+	props := propsOf(parseMultiStatus(t, body), "/caldav/alice/def-calendar/")
+	if got := textOf(props["DAV: displayname"]); got != "Calendario renombrado" {
+		t.Errorf("PROPFIND displayname = %q", got)
+	}
+	if got := textOf(props["http://apple.com/ns/ical/ calendar-color"]); got != "#3498db" {
+		t.Errorf("PROPFIND calendar-color = %q", got)
+	}
+}
+
+// TestProppatchProtectedPropertyIsAtomic checks RFC 4918 atomicity: a patch
+// touching a protected property must fail with 403 for that property, 424
+// for the rest, and apply nothing.
+func TestProppatchProtectedPropertyIsAtomic(t *testing.T) {
+	srv, dataDir := newTestServer(t)
+	coll := srv.URL + "/caldav/alice/def-calendar/"
+
+	patch := `<?xml version="1.0" encoding="utf-8"?>
+<D:propertyupdate xmlns:D="DAV:">
+  <D:set><D:prop>
+    <D:getetag>"hacked"</D:getetag>
+    <D:displayname>No se aplica</D:displayname>
+  </D:prop></D:set>
+</D:propertyupdate>`
+	resp, body := do(t, "PROPPATCH", coll, patch, map[string]string{
+		"Content-Type": "application/xml; charset=utf-8",
+	})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("PROPPATCH = %d, want 207: %s", resp.StatusCode, body)
+	}
+	ms := parseMultiStatus(t, body)
+	resp0 := ms.Responses[0]
+	var status []string
+	for _, ps := range resp0.Propstats {
+		status = append(status, ps.Status)
+	}
+	joined := strings.Join(status, ",")
+	if !strings.Contains(joined, "403") || !strings.Contains(joined, "424") {
+		t.Errorf("propstat statuses = %q, want 403 (protected) and 424 (dependency)", joined)
+	}
+
+	b, err := os.ReadFile(filepath.Join(dataDir, "collection-root", "alice", "def-calendar", ".Radicale.props"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"D:displayname": "Personal Calendar"`) {
+		t.Errorf("atomicity broken: the displayname changed despite the failed patch: %s", b)
+	}
+}
+
+// TestProppatchRemove deletes a client property.
+func TestProppatchRemove(t *testing.T) {
+	srv, _ := newTestServer(t)
+	coll := srv.URL + "/caldav/alice/def-calendar/"
+
+	setPatch := `<?xml version="1.0"?><D:propertyupdate xmlns:D="DAV:" xmlns:IC="http://apple.com/ns/ical/">
+  <D:set><D:prop><IC:calendar-color>#000000</IC:calendar-color></D:prop></D:set></D:propertyupdate>`
+	if resp, body := do(t, "PROPPATCH", coll, setPatch, map[string]string{"Content-Type": "application/xml"}); resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("set = %d: %s", resp.StatusCode, body)
+	}
+	removePatch := `<?xml version="1.0"?><D:propertyupdate xmlns:D="DAV:" xmlns:IC="http://apple.com/ns/ical/">
+  <D:remove><D:prop><IC:calendar-color/></D:prop></D:remove></D:propertyupdate>`
+	if resp, body := do(t, "PROPPATCH", coll, removePatch, map[string]string{"Content-Type": "application/xml"}); resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("remove = %d: %s", resp.StatusCode, body)
+	}
+
+	req := `<?xml version="1.0"?><D:propfind xmlns:D="DAV:" xmlns:IC="http://apple.com/ns/ical/">
+  <D:prop><IC:calendar-color/></D:prop></D:propfind>`
+	resp, body := do(t, "PROPFIND", coll, req, map[string]string{"Depth": "0"})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND = %d: %s", resp.StatusCode, body)
+	}
+	if missing := strings.Join(notFoundOf(parseMultiStatus(t, body), "/caldav/alice/def-calendar/"), ","); !strings.Contains(missing, "calendar-color") {
+		t.Errorf("removed property did not come back as 404: %q", missing)
+	}
+}
+
+// TestProppatchErrors covers the error cases: missing collection and
+// unsupported targets.
+func TestProppatchErrors(t *testing.T) {
+	srv, _ := newTestServer(t)
+	patch := `<?xml version="1.0"?><D:propertyupdate xmlns:D="DAV:">
+  <D:set><D:prop><D:displayname>x</D:displayname></D:prop></D:set></D:propertyupdate>`
+
+	resp, _ := do(t, "PROPPATCH", srv.URL+"/caldav/alice/no-existe/", patch, map[string]string{"Content-Type": "application/xml"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("PROPPATCH on missing collection = %d, want 404", resp.StatusCode)
+	}
+	resp, _ = do(t, "PROPPATCH", srv.URL+"/caldav/alice/", patch, map[string]string{"Content-Type": "application/xml"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("PROPPATCH on the home set = %d, want 403", resp.StatusCode)
 	}
 }
 

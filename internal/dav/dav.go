@@ -211,6 +211,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, err)
 		}
+	case "PROPPATCH":
+		err := h.handleProppatch(w, r)
+		if err != nil {
+			writeError(w, err)
+		}
 	case "MKCOL", "MKCALENDAR":
 		err := h.handleMkcol(w, r)
 		if err != nil {
@@ -226,7 +231,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case "OPTIONS":
 		h.setDavHeaders(w)
-		w.Header().Set("Allow", "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, REPORT, MKCOL, MKCALENDAR")
+		w.Header().Set("Allow", "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT, MKCOL, MKCALENDAR")
 		w.WriteHeader(http.StatusOK)
 	default:
 		h.Legacy.ServeHTTP(w, r)
@@ -262,6 +267,13 @@ func writeError(w http.ResponseWriter, err error) {
 // handleDelete removes a collection or an object. Radicale answers 204 on
 // success and 404 when the resource does not exist.
 func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) error {
+	// Same as PROPFIND: a client may delete a default collection before any
+	// listing, so the defaults are ensured first.
+	if user := auth.User(r.Context()); user != "" {
+		if _, err := h.collections(user); err != nil {
+			return err
+		}
+	}
 	res, err := h.resolve(r)
 	if err != nil {
 		return err

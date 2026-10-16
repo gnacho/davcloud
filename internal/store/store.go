@@ -27,12 +27,73 @@ import (
 // PropsFile is the per-collection metadata file used by Radicale.
 const PropsFile = ".Radicale.props"
 
-// Collection is the JSON shape of .Radicale.props (keys kept compatible).
+// Well known property keys in a .Radicale.props file. Radicale stores client
+// properties with a short prefix (D:, C:, CR:, ICAL:...) and davcloud keeps
+// exactly that shape, so a volume is interchangeable both ways.
+const (
+	PropTag         = "tag"
+	PropDisplayName = "D:displayname"
+	PropComponents  = "C:supported-calendar-component-set"
+)
+
+// Collection is the metadata of a collection, serialized as the JSON of
+// .Radicale.props. The fixed fields are the keys davcloud itself relies on;
+// Extra holds arbitrary client properties (set via PROPPATCH, e.g.
+// "ICAL:calendar-color"), keyed exactly as they appear in the file.
 type Collection struct {
-	ID          string   `json:"-"`
-	Tag         string   `json:"tag"` // VCALENDAR | VADDRESSBOOK
-	DisplayName string   `json:"D:displayname"`
-	Components  []string `json:"C:supported-calendar-component-set,omitempty"`
+	ID          string            `json:"-"`
+	Tag         string            // VCALENDAR | VADDRESSBOOK
+	DisplayName string            // "D:displayname"
+	Components  []string          // "C:supported-calendar-component-set"
+	Extra       map[string]string // other client properties
+}
+
+// MarshalJSON writes the flat JSON Radicale uses: the fixed fields as their
+// well known keys plus every extra property.
+func (c Collection) MarshalJSON() ([]byte, error) {
+	m := map[string]any{PropTag: c.Tag, PropDisplayName: c.DisplayName}
+	if len(c.Components) > 0 {
+		m[PropComponents] = c.Components
+	}
+	for k, v := range c.Extra {
+		if k == PropTag || k == PropDisplayName || k == PropComponents {
+			continue
+		}
+		m[k] = v
+	}
+	return json.MarshalIndent(m, "", "  ")
+}
+
+// UnmarshalJSON reads the flat JSON, tolerating unknown keys and shapes: any
+// non string value in an extra key is ignored instead of failing the read.
+func (c *Collection) UnmarshalJSON(b []byte) error {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	*c = Collection{ID: c.ID, Extra: map[string]string{}}
+	for k, v := range m {
+		switch k {
+		case PropTag:
+			_ = json.Unmarshal(v, &c.Tag)
+		case PropDisplayName:
+			_ = json.Unmarshal(v, &c.DisplayName)
+		case PropComponents:
+			_ = json.Unmarshal(v, &c.Components)
+		default:
+			var s string
+			if err := json.Unmarshal(v, &s); err == nil {
+				c.Extra[k] = s
+			}
+		}
+	}
+	return nil
+}
+
+// Prop returns a client property by its file key (e.g. "ICAL:calendar-color").
+func (c Collection) Prop(key string) (string, bool) {
+	v, ok := c.Extra[key]
+	return v, ok
 }
 
 // Store is a root directory containing the Radicale collection tree.
@@ -220,6 +281,49 @@ func (s *Store) DeleteCollection(user, id string) error {
 		return err
 	}
 	return os.RemoveAll(filepath.Join(dir, id))
+}
+
+// UpdateCollectionProps applies a PROPPATCH to a collection: it sets the keys
+// of set (file keys, e.g. "D:displayname") and deletes the keys of remove.
+// Fixed keys are applied to their struct fields, everything else to Extra.
+// The write is atomic (same mechanism as items).
+func (s *Store) UpdateCollectionProps(user, id string, set map[string]string, remove []string) error {
+	dir, err := s.userDir(user)
+	if err != nil {
+		return err
+	}
+	collDir := filepath.Join(dir, id)
+	c, err := s.readCollection(collDir, id)
+	if err != nil {
+		return err
+	}
+	if c.Extra == nil {
+		c.Extra = map[string]string{}
+	}
+	apply := func(key, value string) {
+		switch key {
+		case PropTag:
+			c.Tag = value
+		case PropDisplayName:
+			c.DisplayName = value
+		default:
+			c.Extra[key] = value
+		}
+	}
+	for k, v := range set {
+		apply(k, v)
+	}
+	for _, k := range remove {
+		switch k {
+		case PropTag:
+			c.Tag = ""
+		case PropDisplayName:
+			c.DisplayName = ""
+		default:
+			delete(c.Extra, k)
+		}
+	}
+	return s.writeProps(collDir, c)
 }
 
 func (s *Store) collDir(user, coll string) (string, error) {
