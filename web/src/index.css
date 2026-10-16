@@ -1,0 +1,89 @@
+@import url("https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Roboto", "Segoe UI", Arial, sans-serif;
+  --color-ink: #ffffff;
+  --color-panel: #ffffff;
+  --color-panel2: #f1f3f4;
+  --color-line: #dadce0;
+  --color-accent: #1a73e8;
+  --color-ggray: #5f6368;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-white text-[#1f1f1f] font-sans antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+}
+::-webkit-scrollbar-thumb {
+  background: #dadce0;
+  border-radius: 999px;
+  border: 3px solid #fff;
+  background-clip: content-box;
+}
+
+/* ══ FullCalendar — estilo Google Calendar ══ */
+.fc {
+  --fc-border-color: #dadce0;
+  --fc-page-bg-color: #ffffff;
+  --fc-neutral-bg-color: #f1f3f4;
+  --fc-today-bg-color: #e8f0fe;
+  --fc-event-border-color: transparent;
+  --fc-event-text-color: #ffffff;
+  --fc-small-font-size: 0.75rem;
+}
+.fc .fc-scrollgrid {
+  background: #fff;
+  border-radius: 8px;
+}
+.fc .fc-col-header-cell-cushion {
+  color: #70757a;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 8px;
+  text-transform: lowercase;
+}
+.fc .fc-daygrid-day-number {
+  color: #70757a;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.fc .fc-day-today .fc-daygrid-day-number {
+  color: #1a73e8;
+  font-weight: 700;
+}
+.fc .fc-daygrid-day.fc-day-today {
+  background: #e8f0fe;
+}
+/* chips de evento: bloque de color sólido con texto blanco */
+.fc-daygrid-event,
+.fc-timegrid-event {
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 16px;
+  margin-top: 1px;
+  border-left: 3px solid rgba(0, 0, 0, 0.25);
+}
+.fc .fc-daygrid-dot-event {
+  display: none;
+}
+.fc .fc-daygrid-more-link {
+  color: #1f1f1f;
+  font-size: 11px;
+  font-weight: 600;
+  padding-left: 8px;
+}
+.fc .fc-highlight {
+  background: rgba(26, 115, 232, 0.12);
+}

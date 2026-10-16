@@ -1,0 +1,30 @@
+# Drop-in overlay for the official opencloud-compose deployment.
+#
+# It REPLACES the radicale container with davcloud (Go) keeping:
+#   - the service NAME "radicale"  -> no changes needed in proxy.yaml,
+#     OpenCloud keeps forwarding /caldav and /carddav to "radicale:5232"
+#   - the VOLUME radicale-data     -> all existing calendars/contacts are
+#     preserved (davcloud speaks the same on-disk layout)
+#
+# Usage: in the .env of your opencloud-compose checkout, replace
+# radicale/radicale.yml with the path to this file, e.g.:
+#
+#   COMPOSE_FILE=docker-compose.yml:traefik/opencloud.yml:/path/to/davcloud/deploy/opencloud-davcloud.yml
+#
+# IMPORTANT: build the image first (or push it to your registry and reference
+# it with `image:`), then `docker compose up -d`.
+services:
+  radicale:
+    build:
+      context: /path/to/davcloud          # <-- change to the real path
+      dockerfile: Dockerfile
+    image: davcloud:latest
+    user: "1000:1000"
+    networks:
+      opencloud-net:
+    restart: always
+    volumes:
+      - ${RADICALE_DATA_DIR:-radicale-data}:/data
+    # Security: no published ports. The container is only reachable through
+    # the OpenCloud proxy on the internal network, which injects
+    # X-Remote-User. Never expose port 5232 publicly.
