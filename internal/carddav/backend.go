@@ -1,15 +1,23 @@
-// Package carddav implements the go-webdav v0.7 CardDAV backend on top of
-// the Radicale-compatible store. Same URL layout as the caldav backend:
+// Package carddav implements the go-webdav v0.7 CardDAV backend on top of the
+// Radicale-compatible store.
 //
 //	/<user>/                    -> address book home set
 //	/<user>/<addressbook>/      -> address book collection
 //	/<user>/<addressbook>/x.vcf -> address object
+//
+// Cards are parsed and re-encoded as they are stored: no vCard version
+// rewriting is applied, so what Radicale served (usually vCard 3.0 from
+// iPhones) keeps coming back byte-compatible in its properties.
 package carddav
 
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/emersion/go-vcard"
@@ -20,13 +28,38 @@ import (
 	"davcloud/internal/store"
 )
 
-// Backend implements webdavcarddav.BackEnd.
+// Backend implements webdavcarddav.Backend.
 type Backend struct {
 	st *store.Store
+	// Prefix is the mount point of the endpoint ("/carddav"). The paths that
+	// cross the library handler are server paths and include it, while the
+	// store only knows the local "/<user>/<collection>[/<item>]" layout.
+	Prefix string
 }
 
-// New creates the backend.
-func New(st *store.Store) *Backend { return &Backend{st: st} }
+// New creates the backend mounted at prefix.
+func New(st *store.Store, prefix string) *Backend {
+	return &Backend{st: st, Prefix: "/" + strings.Trim(prefix, "/")}
+}
+
+// local strips the mount prefix from a server path. It is idempotent.
+func (b *Backend) local(p string) string {
+	if b.Prefix != "/" && strings.HasPrefix(p, b.Prefix) {
+		p = strings.TrimPrefix(p, b.Prefix)
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
+}
+
+// serverPath builds the client visible path of a local path.
+func (b *Backend) serverPath(local string) string {
+	if local == "" || local == "/" {
+		return b.Prefix + "/"
+	}
+	return b.Prefix + local
+}
 
 func splitPath(p string) []string {
 	return strings.Split(strings.Trim(p, "/"), "/")
@@ -35,19 +68,21 @@ func splitPath(p string) []string {
 func userFromCtx(ctx context.Context, urlUser string) (string, error) {
 	u := auth.User(ctx)
 	if urlUser == "" || urlUser != u {
-		return "", &webdav.HTTPError{Code: http.StatusForbidden}
+		return "", webdav.NewHTTPError(http.StatusForbidden, fmt.Errorf("carddav: url user %q does not match authenticated user %q", urlUser, u))
 	}
 	return u, nil
 }
 
+func collectionPath(segs []string) string { return "/" + segs[0] + "/" + segs[1] }
+
 // CurrentUserPrincipal implements webdav.UserPrincipalBackend.
 func (b *Backend) CurrentUserPrincipal(ctx context.Context) (string, error) {
-	return "/" + auth.User(ctx), nil
+	return b.serverPath("/" + auth.User(ctx)), nil
 }
 
 // AddressBookHomeSetPath implements the v0.7 backend interface.
 func (b *Backend) AddressBookHomeSetPath(ctx context.Context) (string, error) {
-	return "/" + auth.User(ctx) + "/", nil
+	return b.serverPath("/" + auth.User(ctx) + "/"), nil
 }
 
 // ListAddressBooks implements the backend interface.
@@ -66,7 +101,7 @@ func (b *Backend) ListAddressBooks(ctx context.Context) ([]webdavcarddav.Address
 			continue
 		}
 		out = append(out, webdavcarddav.AddressBook{
-			Path: "/" + user + "/" + c.ID,
+			Path: b.serverPath("/" + user + "/" + c.ID),
 			Name: c.DisplayName,
 		})
 	}
@@ -75,9 +110,9 @@ func (b *Backend) ListAddressBooks(ctx context.Context) ([]webdavcarddav.Address
 
 // GetAddressBook implements the backend interface.
 func (b *Backend) GetAddressBook(ctx context.Context, path string) (*webdavcarddav.AddressBook, error) {
-	segs := splitPath(path)
+	segs := splitPath(b.local(path))
 	if len(segs) != 2 {
-		return nil, &webdav.HTTPError{Code: http.StatusNotFound}
+		return nil, webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("carddav: bad address book path %q", path))
 	}
 	user, err := userFromCtx(ctx, segs[0])
 	if err != nil {
@@ -85,93 +120,111 @@ func (b *Backend) GetAddressBook(ctx context.Context, path string) (*webdavcardd
 	}
 	c, err := b.st.GetCollection(user, segs[1])
 	if err != nil || c.Tag != "VADDRESSBOOK" {
-		return nil, &webdav.HTTPError{Code: http.StatusNotFound}
+		return nil, webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("carddav: address book %q not found", path))
 	}
-	return &webdavcarddav.AddressBook{Path: path, Name: c.DisplayName}, nil
+	return &webdavcarddav.AddressBook{Path: b.serverPath(b.local(path)), Name: c.DisplayName}, nil
 }
 
 // CreateAddressBook implements the backend interface (path from ab.Path).
 func (b *Backend) CreateAddressBook(ctx context.Context, ab *webdavcarddav.AddressBook) error {
-	segs := splitPath(ab.Path)
+	segs := splitPath(b.local(ab.Path))
 	if len(segs) != 2 {
-		return &webdav.HTTPError{Code: http.StatusBadRequest}
+		return webdav.NewHTTPError(http.StatusBadRequest, fmt.Errorf("carddav: bad address book path %q", ab.Path))
 	}
 	user, err := userFromCtx(ctx, segs[0])
 	if err != nil {
 		return err
 	}
-	return b.st.CreateCollection(user, store.Collection{
+	err = b.st.CreateCollection(user, store.Collection{
 		ID:          segs[1],
 		Tag:         "VADDRESSBOOK",
 		DisplayName: ab.Name,
 	})
+	if errors.Is(err, os.ErrExist) {
+		return webdav.NewHTTPError(http.StatusMethodNotAllowed, fmt.Errorf("carddav: address book %q already exists", ab.Path))
+	}
+	return err
 }
 
 // DeleteAddressBook implements the backend interface.
 func (b *Backend) DeleteAddressBook(ctx context.Context, path string) error {
-	segs := splitPath(path)
+	segs := splitPath(b.local(path))
 	if len(segs) != 2 {
-		return &webdav.HTTPError{Code: http.StatusNotFound}
+		return webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("carddav: bad address book path %q", path))
 	}
 	user, err := userFromCtx(ctx, segs[0])
 	if err != nil {
 		return err
 	}
-	return b.st.DeleteCollection(user, segs[1])
+	if err := b.st.DeleteCollection(user, segs[1]); err != nil {
+		return err
+	}
+	return nil
 }
 
+// decodeVCF parses a stored card without rewriting its version: the fields
+// (including VERSION and grouped item1.* properties) are preserved.
 func decodeVCF(data []byte) (vcard.Card, error) {
-	card, err := vcard.NewDecoder(bytes.NewReader(data)).Decode()
-	if err != nil {
-		return nil, err
-	}
-	return vcard.ToV4(card), nil
+	return vcard.NewDecoder(bytes.NewReader(data)).Decode()
 }
 
 func (b *Backend) loadObject(ctx context.Context, collPath, name string) (*webdavcarddav.AddressObject, error) {
-	segs := splitPath(collPath)
+	local := strings.TrimSuffix(b.local(collPath), "/")
+	segs := splitPath(local)
+	if len(segs) != 2 {
+		return nil, webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("carddav: bad collection path %q", collPath))
+	}
 	user, err := userFromCtx(ctx, segs[0])
 	if err != nil {
 		return nil, err
 	}
 	data, err := b.st.ReadItem(user, segs[1], name)
 	if err != nil {
-		return nil, &webdav.HTTPError{Code: http.StatusNotFound}
+		return nil, webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("carddav: object %s/%s not found", collPath, name))
 	}
 	card, err := decodeVCF(data)
 	if err != nil {
-		return nil, &webdav.HTTPError{Code: http.StatusInternalServerError}
+		log.Printf("carddav: unparseable object %s/%s: %v", collPath, name, err)
+		return nil, webdav.NewHTTPError(http.StatusInternalServerError, fmt.Errorf("carddav: unparseable object %s/%s", collPath, name))
 	}
 	return &webdavcarddav.AddressObject{
-		Path: collPath + "/" + name,
-		Data: card,
-		ETag: store.ETag(data),
+		Path:          b.serverPath(local + "/" + name),
+		Card:          card,
+		ETag:          store.ETag(data),
+		ContentLength: int64(len(data)),
 	}, nil
 }
 
 // GetAddressObject implements the backend interface.
 func (b *Backend) GetAddressObject(ctx context.Context, path string, req *webdavcarddav.AddressDataRequest) (*webdavcarddav.AddressObject, error) {
-	segs := splitPath(path)
+	segs := splitPath(b.local(path))
 	if len(segs) != 3 {
-		return nil, &webdav.HTTPError{Code: http.StatusNotFound}
+		return nil, webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("carddav: bad object path %q", path))
 	}
-	return b.loadObject(ctx, "/"+segs[0]+"/"+segs[1], segs[2])
+	return b.loadObject(ctx, collectionPath(segs), segs[2])
 }
 
 func (b *Backend) loadObjects(ctx context.Context, collPath string) ([]webdavcarddav.AddressObject, error) {
-	segs := splitPath(collPath)
+	segs := splitPath(b.local(collPath))
+	if len(segs) != 2 {
+		return nil, webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("carddav: bad collection path %q", collPath))
+	}
 	user, err := userFromCtx(ctx, segs[0])
 	if err != nil {
 		return nil, err
 	}
+	if err := b.st.EnsureUser(user); err != nil {
+		return nil, err
+	}
 	names, err := b.st.ListItems(user, segs[1])
 	if err != nil {
-		return nil, &webdav.HTTPError{Code: http.StatusNotFound}
+		return nil, webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("carddav: collection %q not found", collPath))
 	}
 	var out []webdavcarddav.AddressObject
 	for _, n := range names {
 		obj, err := b.loadObject(ctx, collPath, n)
 		if err != nil {
+			log.Printf("carddav: skipping %s/%s: %v", collPath, n, err)
 			continue
 		}
 		out = append(out, *obj)
@@ -185,8 +238,7 @@ func (b *Backend) ListAddressObjects(ctx context.Context, path string, req *webd
 }
 
 // QueryAddressObjects implements the backend interface using the library's
-// own filter evaluation when available (carddav.Filter), falling back to a
-// naive whole-card text match.
+// own carddav.Filter (text matches over the parsed card).
 func (b *Backend) QueryAddressObjects(ctx context.Context, path string, query *webdavcarddav.AddressBookQuery) ([]webdavcarddav.AddressObject, error) {
 	objs, err := b.loadObjects(ctx, path)
 	if err != nil {
@@ -206,40 +258,93 @@ func encodeVCF(card vcard.Card) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// PutAddressObject implements the unified create/update of the v0.7 API.
-// TODO: honour conditional headers from PutAddressObjectOptions.
+// checkPreconditions mirrors go-webdav's own filesystem backend semantics:
+// a failed If-Match or a matching If-None-Match is 412 Precondition Failed.
+func checkPreconditions(opts *webdavcarddav.PutAddressObjectOptions, existingETag string) error {
+	if opts == nil {
+		return nil
+	}
+	if opts.IfMatch.IsSet() {
+		ok, err := opts.IfMatch.MatchETag(existingETag)
+		if err != nil {
+			return webdav.NewHTTPError(http.StatusBadRequest, err)
+		}
+		if !ok {
+			return webdav.NewHTTPError(http.StatusPreconditionFailed, fmt.Errorf("carddav: If-Match condition failed"))
+		}
+	}
+	if opts.IfNoneMatch.IsSet() {
+		ok, err := opts.IfNoneMatch.MatchETag(existingETag)
+		if err != nil {
+			return webdav.NewHTTPError(http.StatusBadRequest, err)
+		}
+		if ok {
+			return webdav.NewHTTPError(http.StatusPreconditionFailed, fmt.Errorf("carddav: If-None-Match condition failed"))
+		}
+	}
+	return nil
+}
+
+// PutAddressObject implements the unified create/update of the v0.7 API,
+// honouring the If-Match / If-None-Match preconditions from
+// PutAddressObjectOptions.
 func (b *Backend) PutAddressObject(ctx context.Context, path string, card vcard.Card, opts *webdavcarddav.PutAddressObjectOptions) (*webdavcarddav.AddressObject, error) {
-	segs := splitPath(path)
+	segs := splitPath(b.local(path))
 	if len(segs) != 3 {
-		return nil, &webdav.HTTPError{Code: http.StatusBadRequest}
+		return nil, webdav.NewHTTPError(http.StatusBadRequest, fmt.Errorf("carddav: bad object path %q", path))
 	}
 	user, err := userFromCtx(ctx, segs[0])
 	if err != nil {
 		return nil, err
 	}
+	// Make sure the user's default collections exist (same as Radicale's
+	// predefined_collections) so a PUT arriving before discovery still lands.
+	if err := b.st.EnsureUser(user); err != nil {
+		return nil, err
+	}
+	c, err := b.st.GetCollection(user, segs[1])
+	if err != nil || c.Tag != "VADDRESSBOOK" {
+		return nil, webdav.NewHTTPError(http.StatusConflict, fmt.Errorf("carddav: parent address book %q does not exist", segs[1]))
+	}
+
+	existing := ""
+	if etag, err := b.st.ItemETag(user, segs[1], segs[2]); err == nil {
+		existing = etag
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := checkPreconditions(opts, existing); err != nil {
+		return nil, err
+	}
+
 	data, err := encodeVCF(card)
 	if err != nil {
-		return nil, err
+		return nil, webdav.NewHTTPError(http.StatusBadRequest, fmt.Errorf("carddav: cannot encode address object: %w", err))
 	}
 	etag, err := b.st.WriteItem(user, segs[1], segs[2], data)
 	if err != nil {
 		return nil, err
 	}
-	return &webdavcarddav.AddressObject{Path: path, Data: card, ETag: etag}, nil
+	return &webdavcarddav.AddressObject{
+		Path:          b.serverPath(b.local(path)),
+		Card:          card,
+		ETag:          etag,
+		ContentLength: int64(len(data)),
+	}, nil
 }
 
 // DeleteAddressObject implements the backend interface.
 func (b *Backend) DeleteAddressObject(ctx context.Context, path string) error {
-	segs := splitPath(path)
+	segs := splitPath(b.local(path))
 	if len(segs) != 3 {
-		return &webdav.HTTPError{Code: http.StatusNotFound}
+		return webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("carddav: bad object path %q", path))
 	}
 	user, err := userFromCtx(ctx, segs[0])
 	if err != nil {
 		return err
 	}
 	if err := b.st.DeleteItem(user, segs[1], segs[2]); err != nil {
-		return &webdav.HTTPError{Code: http.StatusNotFound}
+		return webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("carddav: object %q not found", path))
 	}
 	return nil
 }
