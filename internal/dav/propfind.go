@@ -18,6 +18,7 @@ const (
 	nsCalDAV  = "urn:ietf:params:xml:ns:caldav"
 	nsCardDAV = "urn:ietf:params:xml:ns:carddav"
 	nsCS      = "http://calendarserver.org/ns/"
+	nsICal    = "http://apple.com/ns/ical/"
 )
 
 // ---------------------------------------------------------------------------
@@ -311,6 +312,8 @@ func (h *Handler) propsForResource(r *http.Request, res *resource) []propEntry {
 				supportedComponents(res.collObj.Components),
 			})
 		}
+		// Client properties written via PROPPATCH (e.g. ICAL:calendar-color).
+		props = append(props, extraProps(res.collObj)...)
 		return append(props, append(common, homeSet)...)
 
 	default:
@@ -456,6 +459,8 @@ func (h *Handler) renderMultiStatus(r *http.Request, req *propfindRequest, targe
 				p = "CR"
 			case nsCS:
 				p = "CS"
+			case nsICal:
+				p = "IC"
 			default:
 				p = fmt.Sprintf("ns%d", next)
 				next++
@@ -516,8 +521,17 @@ func (h *Handler) renderMultiStatus(r *http.Request, req *propfindRequest, targe
 	}
 
 	decl := []string{`xmlns:D="DAV:"`}
+	// The resourcetype and supported-report-set values embed the endpoint
+	// namespace prefix directly (C:calendar / CR:addressbook), so that
+	// namespace is always declared, used or not.
+	if h.Kind == KindCalendar {
+		decl = append(decl, fmt.Sprintf(`xmlns:C="%s"`, esc(nsCalDAV)))
+	} else {
+		decl = append(decl, fmt.Sprintf(`xmlns:CR="%s"`, esc(nsCardDAV)))
+	}
+	seenDecl := map[string]bool{nsDAV: true, nsCalDAV: true, nsCardDAV: true}
 	for _, space := range order {
-		if space == nsDAV {
+		if seenDecl[space] {
 			continue
 		}
 		decl = append(decl, fmt.Sprintf(`xmlns:%s="%s"`, prefixes[space], esc(space)))
