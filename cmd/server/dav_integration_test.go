@@ -51,6 +51,7 @@ type responseElt struct {
 type multistatusDoc struct {
 	XMLName   xml.Name      `xml:"DAV: multistatus"`
 	Responses []responseElt `xml:"response"`
+	SyncToken string        `xml:"sync-token"`
 }
 
 func parseMultiStatus(t *testing.T, body string) multistatusDoc {
@@ -433,6 +434,79 @@ func TestGetConditionalRequests(t *testing.T) {
 	resp, _ = do(t, "GET", url, "", map[string]string{"If-Modified-Since": "Wed, 01 Jan 2042 00:00:00 GMT"})
 	if resp.StatusCode != http.StatusNotModified {
 		t.Errorf("GET with a future If-Modified-Since = %d, want 304", resp.StatusCode)
+	}
+}
+
+// TestSyncCollection covers RFC 6578 with the semantics the multifilesystem
+// store can honestly provide: a stale or empty token gets the full listing,
+// a current token gets an empty response.
+func TestSyncCollection(t *testing.T) {
+	srv, _ := newTestServer(t)
+	coll := srv.URL + "/caldav/alice/def-calendar/"
+
+	if resp, body := do(t, "PUT", coll+"e1.ics", testICS, map[string]string{"Content-Type": "text/calendar"}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT = %d: %s", resp.StatusCode, body)
+	}
+
+	sync := func(token string) multistatusDoc {
+		t.Helper()
+		body := `<?xml version="1.0"?><D:sync-collection xmlns:D="DAV:"><D:sync-token>` + token + `</D:sync-token><D:prop><D:getetag/></D:prop></D:sync-collection>`
+		resp, out := do(t, "REPORT", coll, body, map[string]string{"Content-Type": "application/xml"})
+		if resp.StatusCode != http.StatusMultiStatus {
+			t.Fatalf("REPORT sync-collection = %d, want 207: %s", resp.StatusCode, out)
+		}
+		return parseMultiStatus(t, out)
+	}
+
+	// Empty token: full sync with every item and a token to remember.
+	first := sync("")
+	if len(first.Responses) != 1 || first.Responses[0].Href != "/caldav/alice/def-calendar/e1.ics" {
+		t.Fatalf("full sync hrefs = %v, want the one item", hrefsOf(first))
+	}
+	token := first.SyncToken
+	if !strings.HasPrefix(token, "http://davcloud/ns/sync/") {
+		t.Fatalf("sync token = %q, want a davcloud token", token)
+	}
+
+	// Current token: nothing changed, so an empty response is enough.
+	again := sync(token)
+	if len(again.Responses) != 0 {
+		t.Errorf("sync with the current token returned %d responses, want 0", len(again.Responses))
+	}
+	if again.SyncToken != token {
+		t.Errorf("sync token changed without content changes: %q != %q", again.SyncToken, token)
+	}
+
+	// After a change, the stale token gets the full listing and a new token.
+	if resp, body := do(t, "PUT", coll+"e2.ics", strings.Replace(testICS, "UID:e1", "UID:e2", 1), map[string]string{"Content-Type": "text/calendar"}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT = %d: %s", resp.StatusCode, body)
+	}
+	third := sync(token)
+	if len(third.Responses) != 2 {
+		t.Errorf("sync with a stale token returned %d responses, want the full listing (2)", len(third.Responses))
+	}
+	if third.SyncToken == token {
+		t.Error("sync token did not change after a content change")
+	}
+}
+
+// TestSyncCollectionIsAdvertised checks that PROPFIND announces the report
+// and the token, so clients actually use this code path.
+func TestSyncCollectionIsAdvertised(t *testing.T) {
+	srv, _ := newTestServer(t)
+	coll := srv.URL + "/caldav/alice/def-calendar/"
+
+	req := `<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop><D:sync-token/><D:supported-report-set/></D:prop></D:propfind>`
+	resp, body := do(t, "PROPFIND", coll, req, map[string]string{"Depth": "0"})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND = %d: %s", resp.StatusCode, body)
+	}
+	props := propsOf(parseMultiStatus(t, body), "/caldav/alice/def-calendar/")
+	if !strings.HasPrefix(textOf(props["DAV: sync-token"]), "http://davcloud/ns/sync/") {
+		t.Errorf("collection has no sync-token: %q", textOf(props["DAV: sync-token"]))
+	}
+	if !strings.Contains(props["DAV: supported-report-set"].Inner, "sync-collection") {
+		t.Errorf("supported-report-set does not include sync-collection: %q", props["DAV: supported-report-set"].Inner)
 	}
 }
 
