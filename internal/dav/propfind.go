@@ -219,10 +219,10 @@ func privileges() string {
 	return b.String()
 }
 
-// supportedReports lists the REPORTs that the delegated library handler
-// answers. sync-collection is deliberately absent: the library has no server
-// side implementation, so announcing it would send clients down a failing
-// code path (they fall back to PROPFIND + getetag, which works).
+// supportedReports lists the REPORTs the server answers: the queries are
+// delegated to go-webdav, sync-collection is implemented in internal/dav
+// (RFC 6578, full sync when the token does not match, like Radicale's
+// multifilesystem storage).
 func supportedReports(kind Kind) string {
 	reports := []string{"calendar-query", "calendar-multiget", "free-busy-query"}
 	ns := "C:"
@@ -234,6 +234,7 @@ func supportedReports(kind Kind) string {
 	for _, rep := range reports {
 		b.WriteString(element("D:supported-report", element("D:report", element(ns+rep, ""))))
 	}
+	b.WriteString(element("D:supported-report", element("D:report", element("D:sync-collection", ""))))
 	return b.String()
 }
 
@@ -304,6 +305,7 @@ func (h *Handler) propsForResource(r *http.Request, res *resource) []propEntry {
 			{nsDAV, "displayname", esc(res.collObj.DisplayName)},
 			{nsDAV, "getcontenttype", esc(h.contentType())},
 			{nsCS, "getctag", esc(h.ctag(res.user, res.coll))},
+			{nsDAV, "sync-token", esc(h.syncToken(res.user, res.coll))},
 		}
 		if h.Kind == KindCalendar {
 			props = append(props, propEntry{
@@ -446,6 +448,12 @@ func (h *Handler) handlePropfind(w http.ResponseWriter, r *http.Request) error {
 // on the root element: DAV: is always D, the other known namespaces get
 // readable prefixes, and anything else gets nsN in order of appearance.
 func (h *Handler) renderMultiStatus(r *http.Request, req *propfindRequest, targets []*resource) []byte {
+	return h.renderMultiStatusWithToken(r, req, targets, "")
+}
+
+// renderMultiStatusWithToken is renderMultiStatus plus a trailing sync-token,
+// used by REPORT sync-collection (RFC 6578).
+func (h *Handler) renderMultiStatusWithToken(r *http.Request, req *propfindRequest, targets []*resource, syncToken string) []byte {
 	prefixes := map[string]string{nsDAV: "D"}
 	var order []string
 	next := 0
@@ -540,6 +548,9 @@ func (h *Handler) renderMultiStatus(r *http.Request, req *propfindRequest, targe
 	var sb strings.Builder
 	sb.WriteString("<D:multistatus " + strings.Join(decl, " ") + ">")
 	sb.WriteString(strings.Join(responses, ""))
+	if syncToken != "" {
+		sb.WriteString(element("D:sync-token", esc(syncToken)))
+	}
 	sb.WriteString("</D:multistatus>")
 	return []byte(sb.String())
 }

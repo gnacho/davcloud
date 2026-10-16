@@ -243,6 +243,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.setDavHeaders(w)
 		w.Header().Set("Allow", "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT, MKCOL, MKCALENDAR")
 		w.WriteHeader(http.StatusOK)
+	case "REPORT":
+		err := h.handleReport(w, r)
+		if err != nil {
+			writeError(w, err)
+		}
 	default:
 		h.Legacy.ServeHTTP(w, r)
 	}
