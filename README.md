@@ -119,5 +119,5 @@ Pendiente (issues abiertos):
 
 ## Licencia
 
-AGPL-3.0 (ver LICENSE). go-webdav es MIT; FullCalendar MIT; ical.js
-MPL-2.0.
+Pendiente de decidir (ver issue abierto). go-webdav es MIT; FullCalendar
+MIT; ical.js MPL-2.0.

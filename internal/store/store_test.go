@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -46,6 +47,33 @@ func TestEnsureUserCreatesDefaultsAndIsIdempotent(t *testing.T) {
 	}
 	if tags["def-calendar"] != "VCALENDAR" || tags["def-addressbook"] != "VADDRESSBOOK" {
 		t.Errorf("unexpected tags: %+v", tags)
+	}
+}
+
+// TestReadsRealRadicaleProps is a compatibility regression against the exact
+// .Radicale.props read from a live Radicale deployment (CT 4125): the
+// supported-calendar-component-set is a comma separated STRING, not a JSON
+// array, and it must be written back in that same shape so the volume stays
+// interchangeable in both directions.
+func TestReadsRealRadicaleProps(t *testing.T) {
+	raw := `{"C:supported-calendar-component-set": "VEVENT,VJOURNAL,VTODO", "D:displayname": "Personal Calendar", "tag": "VCALENDAR"}`
+	var c Collection
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		t.Fatalf("cannot read a real Radicale props file: %v", err)
+	}
+	if c.Tag != "VCALENDAR" || c.DisplayName != "Personal Calendar" {
+		t.Errorf("parsed %+v, want the real values", c)
+	}
+	if strings.Join(c.Components, ",") != "VEVENT,VJOURNAL,VTODO" {
+		t.Errorf("components = %v, want VEVENT,VJOURNAL,VTODO", c.Components)
+	}
+
+	out, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"C:supported-calendar-component-set": "VEVENT,VJOURNAL,VTODO"`) {
+		t.Errorf("written props do not keep Radicale's string shape: %s", out)
 	}
 }
 

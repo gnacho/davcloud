@@ -849,6 +849,43 @@ func TestProppatchErrors(t *testing.T) {
 	}
 }
 
+// TestProxyForwardsWithoutPrefix is a parity test against the real OpenCloud
+// proxy contract (read from the deployment's proxy.yaml): /caldav/ is
+// forwarded with the prefix STRIPPED from the path and X-Script-Name set, so
+// davcloud runs in dav-root mode and must still emit prefixed hrefs
+// (/caldav/<user>/... and /carddav/<user>/...).
+func TestProxyForwardsWithoutPrefix(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(newHandler(store.New(dir), filepath.Join(dir, "missing-ui"), "alice", true))
+	t.Cleanup(srv.Close)
+
+	// CalDAV: X-Script-Name /caldav, request path without the prefix.
+	resp, body := do(t, "PROPFIND", srv.URL+"/", propfindBody, map[string]string{
+		"Depth":         "1",
+		"X-Script-Name": "/caldav",
+		"X-Remote-User": "alice",
+	})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND at / with X-Script-Name = %d, want 207: %s", resp.StatusCode, body)
+	}
+	if hrefs := strings.Join(hrefsOf(parseMultiStatus(t, body)), " "); !strings.Contains(hrefs, "/caldav/alice/def-calendar/") {
+		t.Errorf("hrefs = %q, want the prefixed /caldav/alice/def-calendar/", hrefs)
+	}
+
+	// CardDAV: X-Script-Name /carddav selects the other endpoint.
+	resp, body = do(t, "PROPFIND", srv.URL+"/", propfindBody, map[string]string{
+		"Depth":         "1",
+		"X-Script-Name": "/carddav",
+		"X-Remote-User": "alice",
+	})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("CardDAV PROPFIND at / = %d, want 207: %s", resp.StatusCode, body)
+	}
+	if hrefs := strings.Join(hrefsOf(parseMultiStatus(t, body)), " "); !strings.Contains(hrefs, "/carddav/alice/def-addressbook/") {
+		t.Errorf("hrefs = %q, want the prefixed /carddav/alice/def-addressbook/", hrefs)
+	}
+}
+
 // TestETagIsCanonicalAndUsableForPreconditions is a regression guard for a
 // subtle interoperability bug: the store used to return a pre-quoted ETag and
 // go-webdav quotes again, so the server emitted ETag: "\"hex\"" and If-Match
@@ -969,7 +1006,7 @@ func TestSpaFallbackStillWorks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>spa</html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(newHandler(store.New(t.TempDir()), dir, "alice"))
+	srv := httptest.NewServer(newHandler(store.New(t.TempDir()), dir, "alice", false))
 	t.Cleanup(srv.Close)
 
 	resp, body := do(t, "GET", srv.URL+"/some/client/route", "", nil)
