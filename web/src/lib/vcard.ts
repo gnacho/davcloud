@@ -12,8 +12,11 @@ export interface Contact extends ContactDraft {
 }
 
 function esc(s: string): string {
-  return s.replace(/([,;\])/g, "\\$1").replace(/
-/g, "\n");
+  return s
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\r?\n/g, "\\n");
 }
 
 export function buildVCard(d: ContactDraft): string {
