@@ -6,12 +6,18 @@
 //
 // Because the layout is identical, the existing radicale-data volume can be
 // mounted here and all data shows up unchanged.
+//
+// All writes go through writeFileAtomic (temp file + rename in the same
+// directory) so a reader never observes a partially written item: DAVx⁵ and
+// other clients sync collections in parallel and a torn write would corrupt
+// the item.
 package store
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,8 +30,8 @@ const PropsFile = ".Radicale.props"
 // Collection is the JSON shape of .Radicale.props (keys kept compatible).
 type Collection struct {
 	ID          string   `json:"-"`
-	Tag         string   `json:"tag"`                                    // VCALENDAR | VADDRESSBOOK
-	DisplayName string   `json:"D:displayname"`                          //
+	Tag         string   `json:"tag"` // VCALENDAR | VADDRESSBOOK
+	DisplayName string   `json:"D:displayname"`
 	Components  []string `json:"C:supported-calendar-component-set,omitempty"`
 }
 
@@ -55,8 +61,50 @@ func (s *Store) userDir(user string) (string, error) {
 	return filepath.Join(s.Root, "collection-root", u), nil
 }
 
+// writeFileAtomic writes data to path without ever exposing a partial file:
+// it writes to a temp file in the same directory, fsyncs it, and renames it
+// over the destination (rename is atomic within a filesystem).
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() {
+		if tmp != "" {
+			_ = os.Remove(tmp) // no-op after a successful rename
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	tmp = ""
+	// Best effort: make the rename itself durable. A failure here does not
+	// invalidate the write, so it is not reported to the client.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}
+
 // EnsureUser creates the user directory plus the default collections,
-// mirroring Radicale's predefined_collections.
+// mirroring Radicale's predefined_collections. It is idempotent.
 func (s *Store) EnsureUser(user string) error {
 	dir, err := s.userDir(user)
 	if err != nil {
@@ -88,7 +136,7 @@ func (s *Store) writeProps(dir string, c Collection) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, PropsFile), b, 0o644)
+	return writeFileAtomic(filepath.Join(dir, PropsFile), b, 0o644)
 }
 
 func (s *Store) readCollection(dir, id string) (Collection, error) {
@@ -142,8 +190,14 @@ func (s *Store) GetCollection(user, id string) (Collection, error) {
 
 // CreateCollection creates a collection directory with props.
 func (s *Store) CreateCollection(user string, c Collection) error {
+	if _, err := cleanSeg(c.ID); err != nil {
+		return err
+	}
 	dir, err := s.userDir(user)
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	p := filepath.Join(dir, c.ID)
@@ -191,7 +245,7 @@ func (s *Store) ListItems(user, coll string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() || e.Name() == PropsFile {
+		if e.IsDir() || e.Name() == PropsFile || strings.HasPrefix(e.Name(), ".tmp-") {
 			continue
 		}
 		out = append(out, e.Name())
@@ -211,7 +265,20 @@ func (s *Store) ReadItem(user, coll, name string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(dir, name))
 }
 
-// WriteItem writes an item and returns its new ETag (sha256).
+// ItemETag returns the ETag of an existing item, or os.ErrNotExist if the item
+// does not exist. It is the basis for honouring If-Match / If-None-Match.
+func (s *Store) ItemETag(user, coll, name string) (string, error) {
+	data, err := s.ReadItem(user, coll, name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", os.ErrNotExist
+		}
+		return "", err
+	}
+	return ETag(data), nil
+}
+
+// WriteItem writes an item atomically and returns its new ETag (sha256).
 func (s *Store) WriteItem(user, coll, name string, data []byte) (string, error) {
 	if _, err := cleanSeg(name); err != nil {
 		return "", err
@@ -220,7 +287,10 @@ func (s *Store) WriteItem(user, coll, name string, data []byte) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return "", os.ErrNotExist
+	}
+	if err := writeFileAtomic(filepath.Join(dir, name), data, 0o644); err != nil {
 		return "", err
 	}
 	return ETag(data), nil
@@ -238,8 +308,18 @@ func (s *Store) DeleteItem(user, coll, name string) error {
 	return os.Remove(filepath.Join(dir, name))
 }
 
-// ETag computes a strong ETag for raw content.
+// ETag computes a strong ETag for raw content. The value is deliberately
+// unquoted: the DAV layer quotes it when presenting it (as an ETag header or a
+// getetag element value), and the library preconditions compare against the
+// unquoted form. Quoting it here as well would produce "\"hex\"" on the wire.
 func ETag(data []byte) string {
 	h := sha256.Sum256(data)
-	return `"` + hex.EncodeToString(h[:]) + `"`
+	return hex.EncodeToString(h[:])
 }
+
+// QuotedETag is the wire representation of the ETag of data: an HTTP
+// quoted-string, which is also what a getetag property value must be.
+func QuotedETag(data []byte) string { return QuoteETag(ETag(data)) }
+
+// QuoteETag quotes an already computed ETag.
+func QuoteETag(etag string) string { return `"` + etag + `"` }
