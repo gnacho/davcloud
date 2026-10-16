@@ -15,7 +15,7 @@ import (
 func TestProbeCollectionListingDepth(t *testing.T) {
 	dir := t.TempDir()
 	st := store.New(dir)
-	srv := httptest.NewServer(newHandler(st, filepath.Join(dir, "missing-ui"), "alice"))
+	srv := httptest.NewServer(newHandler(st, filepath.Join(dir, "missing-ui"), "alice", false))
 	defer srv.Close()
 
 	cases := []struct {

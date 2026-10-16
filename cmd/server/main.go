@@ -34,7 +34,13 @@ import (
 // GET, HEAD and PUT to go-webdav. The mount prefix is deliberately NOT
 // stripped: the library backend and our own handler both expect server paths
 // ("/caldav/<user>/...") so that the hrefs they emit match Radicale's.
-func newHandler(st *store.Store, uiDir, devUser string) http.Handler {
+//
+// With davRoot the DAV handler is additionally mounted at "/", which is how
+// the OpenCloud proxy reaches davcloud: it forwards /caldav/ with the prefix
+// stripped from the path and X-Script-Name set (verified against a live
+// deployment's proxy.yaml). The SPA is not served in that mode, because every
+// path belongs to DAV; that matches how Radicale runs behind the proxy.
+func newHandler(st *store.Store, uiDir, devUser string, davRoot bool) http.Handler {
 	mw := auth.Middleware(devUser)
 
 	calHandler := &dav.Handler{
@@ -51,6 +57,20 @@ func newHandler(st *store.Store, uiDir, devUser string) http.Handler {
 	}
 
 	mux := http.NewServeMux()
+	if davRoot {
+		// Behind the OpenCloud proxy every path is DAV and the only signal
+		// telling calendars from address books is X-Script-Name, which the
+		// proxy sets to /caldav or /carddav.
+		root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Script-Name") == "/carddav" {
+				cardHandler.ServeHTTP(w, r)
+				return
+			}
+			calHandler.ServeHTTP(w, r)
+		})
+		mux.Handle("/", mw(root))
+		return mux
+	}
 	// Same paths OpenCloud's proxy forwards: /caldav and /carddav
 	mux.Handle("/caldav/", mw(calHandler))
 	mux.Handle("/carddav/", mw(cardHandler))
@@ -98,15 +118,19 @@ func main() {
 	dataDir := flag.String("data-dir", envOr("DAVCLOUD_DATA", "./data"), "data directory (Radicale multifilesystem layout)")
 	uiDir := flag.String("ui-dir", envOr("DAVCLOUD_UI", "web/dist"), "directory with the built web UI (SPA)")
 	devUser := flag.String("dev-user", envOr("DAVCLOUD_DEV_USER", ""), "development only: force this user, ignore X-Remote-User")
+	davRoot := flag.Bool("dav-root", envOr("DAVCLOUD_DAV_ROOT", "") != "", "mount the DAV endpoints at / (mode used behind the OpenCloud proxy, which strips the /caldav and /carddav prefixes); the SPA is not served")
 	flag.Parse()
 
 	st := store.New(*dataDir)
 	if *devUser != "" {
 		log.Printf("davcloud: DEV MODE, every request is treated as user %q", *devUser)
 	}
+	if *davRoot {
+		log.Printf("davcloud: DAV root mode (behind a prefix-stripping proxy), the SPA is not served")
+	}
 
 	log.Printf("davcloud listening on %s (data: %s, ui: %s)", *addr, *dataDir, *uiDir)
-	if err := http.ListenAndServe(*addr, newHandler(st, *uiDir, *devUser)); err != nil {
+	if err := http.ListenAndServe(*addr, newHandler(st, *uiDir, *devUser, *davRoot)); err != nil {
 		log.Fatal(err)
 	}
 }

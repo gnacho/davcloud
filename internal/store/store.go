@@ -50,11 +50,14 @@ type Collection struct {
 }
 
 // MarshalJSON writes the flat JSON Radicale uses: the fixed fields as their
-// well known keys plus every extra property.
+// well known keys plus every extra property. The supported-calendar-component
+// set is written as the comma separated string Radicale writes (verified
+// against a real deployment), not as a JSON array, so both sides can read
+// each other's files.
 func (c Collection) MarshalJSON() ([]byte, error) {
 	m := map[string]any{PropTag: c.Tag, PropDisplayName: c.DisplayName}
 	if len(c.Components) > 0 {
-		m[PropComponents] = c.Components
+		m[PropComponents] = strings.Join(c.Components, ",")
 	}
 	for k, v := range c.Extra {
 		if k == PropTag || k == PropDisplayName || k == PropComponents {
@@ -67,6 +70,8 @@ func (c Collection) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON reads the flat JSON, tolerating unknown keys and shapes: any
 // non string value in an extra key is ignored instead of failing the read.
+// The component set is accepted both as Radicale's comma separated string and
+// as the JSON array davcloud used to write.
 func (c *Collection) UnmarshalJSON(b []byte) error {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(b, &m); err != nil {
@@ -80,15 +85,32 @@ func (c *Collection) UnmarshalJSON(b []byte) error {
 		case PropDisplayName:
 			_ = json.Unmarshal(v, &c.DisplayName)
 		case PropComponents:
-			_ = json.Unmarshal(v, &c.Components)
-		default:
 			var s string
 			if err := json.Unmarshal(v, &s); err == nil {
-				c.Extra[k] = s
+				c.Components = splitComponentSet(s)
+			} else {
+				_ = json.Unmarshal(v, &c.Components)
+			}
+		default:
+			var str string
+			if err := json.Unmarshal(v, &str); err == nil {
+				c.Extra[k] = str
 			}
 		}
 	}
 	return nil
+}
+
+// splitComponentSet parses "VEVENT,VTODO" tolerating spaces, empty entries
+// and the JSON-ish forms Radicale has written over the years.
+func splitComponentSet(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // Prop returns a client property by its file key (e.g. "ICAL:calendar-color").
