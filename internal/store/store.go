@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // PropsFile is the per-collection metadata file used by Radicale.
@@ -410,6 +411,22 @@ func (s *Store) DeleteItem(user, coll, name string) error {
 		return err
 	}
 	return os.Remove(filepath.Join(dir, name))
+}
+
+// ItemModTime returns the modification time of an item.
+func (s *Store) ItemModTime(user, coll, name string) (time.Time, error) {
+	if _, err := cleanSeg(name); err != nil {
+		return time.Time{}, err
+	}
+	dir, err := s.collDir(user, coll)
+	if err != nil {
+		return time.Time{}, err
+	}
+	fi, err := os.Stat(filepath.Join(dir, name))
+	if err != nil {
+		return time.Time{}, err
+	}
+	return fi.ModTime(), nil
 }
 
 // ETag computes a strong ETag for raw content. The value is deliberately

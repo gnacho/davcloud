@@ -229,6 +229,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, err)
 		}
+	case "PUT":
+		err := h.handlePut(w, r)
+		if err != nil {
+			writeError(w, err)
+		}
+	case "GET", "HEAD":
+		err := h.handleGet(w, r)
+		if err != nil {
+			writeError(w, err)
+		}
 	case "OPTIONS":
 		h.setDavHeaders(w)
 		w.Header().Set("Allow", "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT, MKCOL, MKCALENDAR")
