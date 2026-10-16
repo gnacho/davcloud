@@ -336,6 +336,106 @@ func TestWellKnownRedirects(t *testing.T) {
 	}
 }
 
+// TestPutGetAreByteIdentical is the core of issue #6: the file on disk must
+// be exactly the request body (like Radicale, which stores the item as sent)
+// and GET must serve exactly those bytes. That is what keeps the data volume
+// interchangeable with Radicale for the rollback drill.
+func TestPutGetAreByteIdentical(t *testing.T) {
+	srv, dataDir := newTestServer(t)
+
+	raw := "BEGIN:VCALENDAR\r\n" +
+		"VERSION:2.0\r\n" +
+		"PRODID:-//odd order//test//ES\r\n" +
+		"X-WR-CALNAME:Raw\r\n" +
+		"BEGIN:VEVENT\r\n" +
+		"UID:raw-1\r\n" +
+		"DTSTAMP:20261016T120000Z\r\n" +
+		"DTSTART:20261020T090000Z\r\n" +
+		"DTEND:20261020T100000Z\r\n" +
+		"SUMMARY:Orden no alfabetico, con acentos: ñ\r\n" +
+		"X-ODD-PROP;PARAM=uno:valor\r\n" +
+		"END:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"
+
+	if resp, body := do(t, "PUT", srv.URL+"/caldav/alice/def-calendar/raw-1.ics", raw, map[string]string{
+		"Content-Type": "text/calendar; charset=utf-8",
+	}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT = %d: %s", resp.StatusCode, body)
+	}
+
+	onDisk, err := os.ReadFile(filepath.Join(dataDir, "collection-root", "alice", "def-calendar", "raw-1.ics"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != raw {
+		t.Errorf("the file on disk is not byte identical to the request body:\n--- disk ---\n%q\n--- sent ---\n%q", onDisk, raw)
+	}
+
+	resp, body := do(t, "GET", srv.URL+"/caldav/alice/def-calendar/raw-1.ics", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET = %d", resp.StatusCode)
+	}
+	if body != raw {
+		t.Errorf("GET body is not byte identical to what was PUT:\n%q", body)
+	}
+}
+
+// TestPutRejectsMismatchedUID mirrors Radicale: the resource name must match
+// the UID inside the data, so one UID cannot live under two hrefs.
+func TestPutRejectsMismatchedUID(t *testing.T) {
+	srv, _ := newTestServer(t)
+	resp, body := do(t, "PUT", srv.URL+"/caldav/alice/def-calendar/otro-nombre.ics", testICS, map[string]string{
+		"Content-Type": "text/calendar",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("PUT with a name not matching the UID = %d, want 400: %s", resp.StatusCode, body)
+	}
+}
+
+// TestPutAcceptsLaxContentType documents that PUT validates the content, not
+// the Content-Type header (issue #5): a parseable stream is accepted even
+// with a lax media type, an unparseable one is rejected.
+func TestPutAcceptsLaxContentType(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	resp, body := do(t, "PUT", srv.URL+"/caldav/alice/def-calendar/e1.ics", testICS, map[string]string{
+		"Content-Type": "text/plain",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("PUT text/plain with a valid stream = %d, want 201: %s", resp.StatusCode, body)
+	}
+
+	resp, body = do(t, "PUT", srv.URL+"/caldav/alice/def-calendar/basura.ics", "esto no es ical", map[string]string{
+		"Content-Type": "text/calendar",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("PUT with an unparseable stream = %d, want 400: %s", resp.StatusCode, body)
+	}
+}
+
+// TestGetConditionalRequests covers the 304 handling of GET: If-None-Match
+// with the current ETag and If-Modified-Since both answer 304.
+func TestGetConditionalRequests(t *testing.T) {
+	srv, _ := newTestServer(t)
+	url := srv.URL + "/caldav/alice/def-calendar/e1.ics"
+
+	if resp, body := do(t, "PUT", url, testICS, map[string]string{"Content-Type": "text/calendar"}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT = %d: %s", resp.StatusCode, body)
+	}
+	resp, _ := do(t, "GET", url, "", nil)
+	etag := resp.Header.Get("ETag")
+
+	resp, _ = do(t, "GET", url, "", map[string]string{"If-None-Match": etag})
+	if resp.StatusCode != http.StatusNotModified {
+		t.Errorf("GET with If-None-Match = %d, want 304", resp.StatusCode)
+	}
+
+	resp, _ = do(t, "GET", url, "", map[string]string{"If-Modified-Since": "Wed, 01 Jan 2042 00:00:00 GMT"})
+	if resp.StatusCode != http.StatusNotModified {
+		t.Errorf("GET with a future If-Modified-Since = %d, want 304", resp.StatusCode)
+	}
+}
+
 // TestReportCalendarQueryAndMultiget measures what the delegated REPORT
 // handler does on the flat layout: it must answer 207 with hrefs that keep the
 // mount prefix, which is what the OpenCloud extensions resolve against.
@@ -532,7 +632,7 @@ func TestProppatchErrors(t *testing.T) {
 // quoted-string (what Radicale sends) would have failed.
 func TestETagIsCanonicalAndUsableForPreconditions(t *testing.T) {
 	srv, _ := newTestServer(t)
-	url := srv.URL + "/caldav/alice/def-calendar/etag.ics"
+	url := srv.URL + "/caldav/alice/def-calendar/e1.ics"
 
 	if resp, body := do(t, "PUT", url, testICS, map[string]string{
 		"Content-Type": "text/calendar",
@@ -555,7 +655,7 @@ func TestETagIsCanonicalAndUsableForPreconditions(t *testing.T) {
 	if resp.StatusCode != http.StatusMultiStatus {
 		t.Fatalf("PROPFIND = %d: %s", resp.StatusCode, body)
 	}
-	got := textOf(propsOf(parseMultiStatus(t, body), "/caldav/alice/def-calendar/etag.ics")["DAV: getetag"])
+	got := textOf(propsOf(parseMultiStatus(t, body), "/caldav/alice/def-calendar/e1.ics")["DAV: getetag"])
 	if got != etag {
 		t.Errorf("PROPFIND getetag = %s, GET ETag = %s: they must match", got, etag)
 	}
@@ -585,8 +685,8 @@ func TestDeleteIsAvailableOnBothEndpoints(t *testing.T) {
 	srv, _ := newTestServer(t)
 
 	for _, tc := range []struct{ url, body, ctype string }{
-		{"/caldav/alice/def-calendar/d1.ics", testICS, "text/calendar"},
-		{"/carddav/alice/def-addressbook/d1.vcf", testVCF, "text/vcard"},
+		{"/caldav/alice/def-calendar/e1.ics", testICS, "text/calendar"},
+		{"/carddav/alice/def-addressbook/c1.vcf", testVCF, "text/vcard"},
 	} {
 		if resp, body := do(t, "PUT", srv.URL+tc.url, tc.body, map[string]string{
 			"Content-Type": tc.ctype,
@@ -620,7 +720,7 @@ func TestPropfindRejectsCrossUserAccess(t *testing.T) {
 func TestPropfindInfinityDepth(t *testing.T) {
 	srv, _ := newTestServer(t)
 
-	if resp, body := do(t, "PUT", srv.URL+"/caldav/alice/def-calendar/i1.ics", testICS, map[string]string{
+	if resp, body := do(t, "PUT", srv.URL+"/caldav/alice/def-calendar/e1.ics", testICS, map[string]string{
 		"Content-Type": "text/calendar",
 	}); resp.StatusCode >= 300 {
 		t.Fatalf("PUT = %d: %s", resp.StatusCode, body)
@@ -631,7 +731,7 @@ func TestPropfindInfinityDepth(t *testing.T) {
 		t.Fatalf("PROPFIND infinity = %d, want 207: %s", resp.StatusCode, body)
 	}
 	hrefs := strings.Join(hrefsOf(parseMultiStatus(t, body)), " ")
-	for _, want := range []string{"/caldav/alice/", "/caldav/alice/def-calendar/", "/caldav/alice/def-calendar/i1.ics"} {
+	for _, want := range []string{"/caldav/alice/", "/caldav/alice/def-calendar/", "/caldav/alice/def-calendar/e1.ics"} {
 		if !strings.Contains(hrefs, want) {
 			t.Errorf("infinity listing is missing %s: %v", want, hrefs)
 		}
