@@ -260,11 +260,11 @@ func (b *Backend) ListCalendarObjects(ctx context.Context, path string, req *web
 	return b.loadObjects(ctx, path)
 }
 
-// QueryCalendarObjects implements the backend interface. The library's own
-// caldav.Filter/caldav.Match evaluate component and time-range filters; the
-// time-range evaluation of recurring series (RRULE/RDATE/EXDATE expansion) is
-// NOT done here yet, so a recurring master that starts outside the range but
-// has occurrences inside it may be missed. Clients expand locally meanwhile.
+// QueryCalendarObjects implements the backend interface. Objects are matched
+// one by one with the library's caldav.Match (which expands RRULE/RDATE/EXDATE
+// when evaluating time-ranges) instead of the atomic caldav.Filter, so a
+// single object with a broken recurrence cannot kill the whole query: it is
+// re-evaluated as a plain single event, and only logged.
 func (b *Backend) QueryCalendarObjects(ctx context.Context, path string, query *webdavcaldav.CalendarQuery) ([]webdavcaldav.CalendarObject, error) {
 	objs, err := b.loadObjects(ctx, path)
 	if err != nil {
@@ -273,7 +273,35 @@ func (b *Backend) QueryCalendarObjects(ctx context.Context, path string, query *
 	if query == nil {
 		return objs, nil
 	}
-	return webdavcaldav.Filter(query, objs)
+	var out []webdavcaldav.CalendarObject
+	for _, obj := range objs {
+		ok, err := webdavcaldav.Match(query.CompFilter, &obj)
+		if err != nil {
+			log.Printf("caldav: recurrence expansion failed for %s (%v), matching as a single event", obj.Path, err)
+			stripRecurrence(obj.Data.Component)
+			ok, err = webdavcaldav.Match(query.CompFilter, &obj)
+			if err != nil {
+				log.Printf("caldav: skipping unmatchable object %s: %v", obj.Path, err)
+				continue
+			}
+		}
+		if ok {
+			out = append(out, obj)
+		}
+	}
+	return out, nil
+}
+
+// stripRecurrence removes RRULE/RDATE/EXDATE from every component, so an
+// object whose recurrence data cannot be expanded is matched on its plain
+// dates instead of failing the query.
+func stripRecurrence(comp *ical.Component) {
+	for _, name := range []string{"RRULE", "RDATE", "EXDATE"} {
+		comp.Props.Del(name)
+	}
+	for _, child := range comp.Children {
+		stripRecurrence(child)
+	}
 }
 
 func encodeICS(cal *ical.Calendar) ([]byte, error) {

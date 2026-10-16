@@ -437,6 +437,156 @@ func TestGetConditionalRequests(t *testing.T) {
 	}
 }
 
+// TestReportTimeRangeExpandsRecurrences is the characterization test the PLAN
+// requires for phase 2: a weekly recurring event whose master started long
+// before the query range must still appear, because go-webdav expands the
+// RRULE when evaluating the time-range.
+func TestReportTimeRangeExpandsRecurrences(t *testing.T) {
+	srv, _ := newTestServer(t)
+	coll := srv.URL + "/caldav/alice/def-calendar/"
+
+	weekly := "BEGIN:VCALENDAR\r\n" +
+		"VERSION:2.0\r\n" +
+		"PRODID:-//davcloud//test//EN\r\n" +
+		"BEGIN:VEVENT\r\n" +
+		"UID:semanal\r\n" +
+		"DTSTAMP:20250101T000000Z\r\n" +
+		"DTSTART:20250106T090000Z\r\n" +
+		"DTEND:20250106T100000Z\r\n" +
+		"RRULE:FREQ=WEEKLY\r\n" +
+		"SUMMARY:Reunion semanal\r\n" +
+		"END:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"
+	single := strings.Replace(testICS, "UID:e1", "UID:puntual", 1)
+
+	for _, tc := range []struct{ name, data string }{
+		{"semanal.ics", weekly},
+		{"puntual.ics", single},
+	} {
+		if resp, body := do(t, "PUT", coll+tc.name, tc.data, map[string]string{"Content-Type": "text/calendar"}); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("PUT %s = %d: %s", tc.name, resp.StatusCode, body)
+		}
+	}
+
+	queryRange := func(start, end string) multistatusDoc {
+		t.Helper()
+		body := `<?xml version="1.0"?>
+<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:D="DAV:">
+  <D:prop><D:getetag/></D:prop>
+  <C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT">
+    <C:time-range start="` + start + `" end="` + end + `"/>
+  </C:comp-filter></C:comp-filter></C:filter>
+</C:calendar-query>`
+		resp, out := do(t, "REPORT", coll, body, map[string]string{"Content-Type": "application/xml", "Depth": "1"})
+		if resp.StatusCode != http.StatusMultiStatus {
+			t.Fatalf("REPORT time-range = %d, want 207: %s", resp.StatusCode, out)
+		}
+		return parseMultiStatus(t, out)
+	}
+
+	// A range in October 2026: the master is from January 2025, but the
+	// weekly series has occurrences inside the range.
+	ms := queryRange("20261001T000000Z", "20261031T235959Z")
+	hrefs := strings.Join(hrefsOf(ms), " ")
+	if !strings.Contains(hrefs, "semanal.ics") {
+		t.Errorf("the weekly recurring event is missing from a range its series crosses: %v", hrefs)
+	}
+	if strings.Contains(hrefs, "puntual.ics") {
+		t.Errorf("the one-off event of January 2026 leaked into October 2026: %v", hrefs)
+	}
+}
+
+// TestReportTimeRangeToleratesBrokenRRULE documents the failure mode the
+// library has on its own: an event whose RRULE cannot be expanded must not
+// kill the whole query with a 500; the event is evaluated as non recurring.
+func TestReportTimeRangeToleratesBrokenRRULE(t *testing.T) {
+	srv, _ := newTestServer(t)
+	coll := srv.URL + "/caldav/alice/def-calendar/"
+
+	broken := "BEGIN:VCALENDAR\r\n" +
+		"VERSION:2.0\r\n" +
+		"PRODID:-//davcloud//test//EN\r\n" +
+		"BEGIN:VEVENT\r\n" +
+		"UID:roto\r\n" +
+		"DTSTAMP:20250101T000000Z\r\n" +
+		"DTSTART:20261020T090000Z\r\n" +
+		"DTEND:20261020T100000Z\r\n" +
+		"RRULE:FREQ=NOEXISTE\r\n" +
+		"SUMMARY:Serie rota\r\n" +
+		"END:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"
+	if resp, body := do(t, "PUT", coll+"roto.ics", broken, map[string]string{"Content-Type": "text/calendar"}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT = %d: %s", resp.StatusCode, body)
+	}
+
+	body := `<?xml version="1.0"?>
+<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:D="DAV:">
+  <D:prop><D:getetag/></D:prop>
+  <C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT">
+    <C:time-range start="20261001T000000Z" end="20261031T235959Z"/>
+  </C:comp-filter></C:comp-filter></C:filter>
+</C:calendar-query>`
+	resp, out := do(t, "REPORT", coll, body, map[string]string{"Content-Type": "application/xml", "Depth": "1"})
+	if resp.StatusCode == http.StatusInternalServerError {
+		t.Fatalf("a broken RRULE killed the whole query with a 500: %s", out)
+	}
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("REPORT with a broken RRULE = %d, want 207: %s", resp.StatusCode, out)
+	}
+	// Evaluated as non recurring, its DTSTART is inside the range.
+	if hrefs := strings.Join(hrefsOf(parseMultiStatus(t, out)), " "); !strings.Contains(hrefs, "roto.ics") {
+		t.Errorf("the event with the broken RRULE did not fall back to its DTSTART: %v", hrefs)
+	}
+}
+
+// TestReportTimeRangeHonoursTZID characterizes timezone handling: an event
+// at 18:00 Europe/Madrid (17:00 UTC in winter time) must be found by a UTC
+// range covering that instant, and not by one covering 18:00 UTC. Clients
+// often send TZID without a VTIMEZONE.
+func TestReportTimeRangeHonoursTZID(t *testing.T) {
+	srv, _ := newTestServer(t)
+	coll := srv.URL + "/caldav/alice/def-calendar/"
+
+	tzEvent := "BEGIN:VCALENDAR\r\n" +
+		"VERSION:2.0\r\n" +
+		"PRODID:-//davcloud//test//EN\r\n" +
+		"BEGIN:VEVENT\r\n" +
+		"UID:tz1\r\n" +
+		"DTSTAMP:20261016T120000Z\r\n" +
+		"DTSTART;TZID=Europe/Madrid:20261026T180000\r\n" +
+		"DTEND;TZID=Europe/Madrid:20261026T190000\r\n" +
+		"SUMMARY:Cena en Madrid\r\n" +
+		"END:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"
+	if resp, body := do(t, "PUT", coll+"tz1.ics", tzEvent, map[string]string{"Content-Type": "text/calendar"}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT = %d: %s", resp.StatusCode, body)
+	}
+
+	queryRange := func(start, end string) []string {
+		t.Helper()
+		body := `<?xml version="1.0"?>
+<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:D="DAV:">
+  <D:prop><D:getetag/></D:prop>
+  <C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT">
+    <C:time-range start="` + start + `" end="` + end + `"/>
+  </C:comp-filter></C:comp-filter></C:filter>
+</C:calendar-query>`
+		resp, out := do(t, "REPORT", coll, body, map[string]string{"Content-Type": "application/xml", "Depth": "1"})
+		if resp.StatusCode != http.StatusMultiStatus {
+			t.Fatalf("REPORT = %d: %s", resp.StatusCode, out)
+		}
+		return hrefsOf(parseMultiStatus(t, out))
+	}
+
+	// 26-Oct-2026 18:00 Europe/Madrid is 17:00 UTC (winter time).
+	if hrefs := strings.Join(queryRange("20261026T164500Z", "20261026T180000Z"), " "); !strings.Contains(hrefs, "tz1.ics") {
+		t.Errorf("the 18:00 Europe/Madrid event was not found by the 16:45-18:00 UTC range: %v", hrefs)
+	}
+	if hrefs := strings.Join(queryRange("20261026T180500Z", "20261026T190000Z"), " "); strings.Contains(hrefs, "tz1.ics") {
+		t.Errorf("the event leaked into a UTC range after its end (18:05-19:00 UTC): %v", hrefs)
+	}
+}
+
 // TestSyncCollection covers RFC 6578 with the semantics the multifilesystem
 // store can honestly provide: a stale or empty token gets the full listing,
 // a current token gets an empty response.
