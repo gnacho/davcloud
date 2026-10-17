@@ -25,7 +25,10 @@ pct exec 4125 -- sh -c 'systemctl stop radicale && cp -a /var/lib/radicale /var/
 En cualquier máquina con Go (el CT no necesita toolchain):
 
 ```
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o davcloud ./cmd/server
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+  -ldflags "-s -w -X main.version=$(git describe --tags --always) -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -o davcloud ./cmd/server
+./davcloud -version
 sha256sum davcloud
 ```
 
