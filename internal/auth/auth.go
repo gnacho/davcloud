@@ -3,7 +3,7 @@
 // it has authenticated the user (session cookie or app token).
 //
 // SECURITY: this server must NEVER be reachable from outside the internal
-// docker network. Anyone able to send arbitrary X-Remote-User headers can
+// internal network. Anyone able to send arbitrary X-Remote-User headers can
 // impersonate any user.
 package auth
 
