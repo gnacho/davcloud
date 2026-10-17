@@ -237,8 +237,17 @@ func (b *Backend) ListAddressObjects(ctx context.Context, path string, req *webd
 	return b.loadObjects(ctx, path)
 }
 
-// QueryAddressObjects implements the backend interface using the library's
-// own carddav.Filter (text matches over the parsed card).
+// QueryAddressObjects implements the backend interface. Most of the work is
+// delegated to the library's Match, with two davcloud-specific adjustments:
+//
+//   - An addressbook-query WITHOUT <C:filter> matches every object (RFC 6352,
+//     section 8.6: the filter is optional). go-webdav v0.7's Match falls
+//     through its empty prop-filters loop to `return false`, so it would
+//     answer an empty multistatus - opencloud-contacts lists the address book
+//     exactly this way. We handle the filterless case here; the response
+//     properties are still rendered per the report's <D:prop>.
+//   - A match error (e.g. an unexpandable recurrence) does not kill the whole
+//     query: the object is re-evaluated as a plain one and only logged.
 func (b *Backend) QueryAddressObjects(ctx context.Context, path string, query *webdavcarddav.AddressBookQuery) ([]webdavcarddav.AddressObject, error) {
 	objs, err := b.loadObjects(ctx, path)
 	if err != nil {
@@ -247,7 +256,25 @@ func (b *Backend) QueryAddressObjects(ctx context.Context, path string, query *w
 	if query == nil {
 		return objs, nil
 	}
-	return webdavcarddav.Filter(query, objs)
+	if len(query.PropFilters) == 0 {
+		// No <C:filter>: every object matches. Respect the result limit.
+		if query.Limit > 0 && query.Limit < len(objs) {
+			return objs[:query.Limit], nil
+		}
+		return objs, nil
+	}
+	var out []webdavcarddav.AddressObject
+	for _, obj := range objs {
+		ok, err := webdavcarddav.Match(query, &obj)
+		if err != nil {
+			log.Printf("carddav: match failed for %s (%v), skipping", obj.Path, err)
+			continue
+		}
+		if ok {
+			out = append(out, obj)
+		}
+	}
+	return out, nil
 }
 
 func encodeVCF(card vcard.Card) ([]byte, error) {
