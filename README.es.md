@@ -1,130 +1,164 @@
 # davcloud
 
+[![ci](https://github.com/gnacho/davcloud/actions/workflows/ci.yml/badge.svg)](https://github.com/gnacho/davcloud/actions/workflows/ci.yml)
+
 [English](README.md) | [Español](README.es.md)
 
-Un **servidor CalDAV + CardDAV en Go** con dos cometidos:
+Un **servidor CalDAV + CardDAV en Go**, de binario único, construido como
+reemplazo drop-in de [Radicale](https://radicale.org/): habla las mismas
+URLs, lee y escribe el mismo layout de datos en disco y obtiene los usuarios
+de la misma cabecera que inyecta un proxy inverso. Pensado para colocarse
+detrás de un despliegue de
+[OpenCloud](https://github.com/opencloud-eu/opencloud) (su despliegue de
+referencia trae Radicale exactamente así), pero funciona detrás de cualquier
+proxy que autentique e inyecte la identidad.
 
-1. **Base para OpenCloud**: reemplazo drop-in del sidecar Radicale de un
-   despliegue de OpenCloud (mismo puerto, mismo contrato `X-Remote-User`,
-   mismo volumen de datos, migración cero), con una web UI moderna
-   (React + Tailwind + FullCalendar) servida por el mismo binario.
-2. **Reemplazo genérico de Radicale**: cualquier despliegue que sirva
-   contactos y calendarios sobre el layout `multifilesystem` de Radicale
-   detrás de un proxy que inyecte la identidad en una cabecera puede
-   sustituir Radicale por davcloud montando el mismo volumen.
+Un binario estático (~7 MB), sin dependencias de runtime, sin base de datos,
+sin contenedores: el servidor y el volumen de datos son todo el despliegue.
 
-El objetivo de paridad es simple y medible: que DAVx⁵, Thunderbird, iOS y las
-extensiones web de OpenCloud (agenda, contacts) no noten la diferencia.
+## Qué hace
 
-Es un **único binario estático** (~7 MB): servidor DAV y web UI en un
-ejecutable, sin dependencias de runtime.
+- **CalDAV**: descubrimiento de calendarios, REPORTs `calendar-query` y
+  `calendar-multiget` (con expansión server-side de RRULE/RDATE/EXDATE en
+  las queries de rango), `sync-collection` (RFC 6578) para sincronización
+  incremental, MKCALENDAR, free-busy.
+- **CardDAV**: descubrimiento de libretas, REPORTs `addressbook-query` y
+  `addressbook-multiget`, MKCOL, el mismo endpoint de sync.
+- **Plomería DAV común**: PROPFIND (Depth 0/1/infinity, `prop`/`allprop`/
+  `propname`, propstat 404 para propiedades desconocidas), PROPPATCH con
+  atomicidad RFC 4918 (renombrar, `calendar-color`, descripciones), PUT/GET
+  condicionales (`If-Match`, `If-None-Match`, 304), DELETE, MKCOL/MKCALENDAR,
+  OPTIONS y descubrimiento `/.well-known/caldav|carddav`.
+- **Multiusuario, auth agnóstica del proxy**: cada petición lleva
+  `X-Remote-User`; el servidor nunca pide contraseñas. Emparejalo con
+  cualquier proxy inverso que autentique (el proxy de OpenCloud, Authelia,
+  basic auth...).
+- **Bootstrap automático por usuario**: el primer acceso crea "Personal
+  Calendar" y "Personal Address Book" del usuario, como las colecciones
+  predefinidas de Radicale.
+- Además, una web UI opcional integrada (React + FullCalendar) para uso
+  standalone, servida por el mismo binario.
 
-## Contrato con el proxy (idéntico al de Radicale)
+Lo que deliberadamente **no** hace (todavía): invitaciones (iMIP),
+compartición de calendarios entre usuarios y edición de recurrencias en la
+web UI.
 
-| Aspecto | Valor |
-|---|---|
-| Puerto | `5232` (solo red interna, nunca público) |
-| Identidad | cabecera `X-Remote-User` inyectada por el proxy |
-| Rutas | `/caldav`, `/carddav` (con `-dav-root`: servidas en `/`, prefijo eliminado) |
-| Datos | layout Radicale `multifilesystem` → mismo volumen, migración cero |
-| Defaults | crea "Personal Calendar" y "Personal Address Book" por usuario |
-| Auth de clientes | usuario + app token (OpenCloud: Ajustes → App tokens) |
-
-⚠️ **Seguridad**: el servidor confía ciegamente en `X-Remote-User`. Un
-atacante con acceso directo al puerto 5232 puede suplantar a cualquier
-usuario. Nunca publicar el puerto: solo debe ser accesible vía el proxy.
-
-## Arquitectura
+## Cómo lo hace
 
 ```
-cmd/server        → HTTP: /caldav, /carddav, /.well-known/*, / (SPA)
-internal/dav      → PROPFIND/PROPPATCH/PUT/GET/DELETE/MKCOL/OPTIONS/sync-collection
-                    con el layout plano de Radicale
-internal/auth     → middleware X-Remote-User + modo dev (-dev-user)
-internal/store    → filesystem, layout compatible con Radicale (.Radicale.props)
-internal/caldav   → backend CalDAV delegado en go-webdav (REPORT queries)
-internal/carddav  → backend CardDAV delegado en go-webdav (REPORT queries)
-web/              → React 18 + Vite + Tailwind v4 + FullCalendar + tsdav + ical.js
-deploy/           → runbook de migración (binario + systemd)
+clientes (DAVx5, Thunderbird, iOS, apps web)
+      |  /caldav/*  /carddav/*
+      v
+proxy inverso con auth  (autentica -> X-Remote-User: <id usuario>)
+      |  quita el prefijo, pone X-Script-Name
+      v
+davcloud  127.0.0.1:5232  (un binario estático)
+      |
+      v
+volumen de datos, layout "multifilesystem" de Radicale
+
+<volumen>/collection-root/<usuario>/<coleccion>/.Radicale.props
+<volumen>/collection-root/<usuario>/<coleccion>/<item>.ics|.vcf
 ```
 
-### Por qué hay un handler DAV propio
+- **URLs planas, compatibles con Radicale**:
+  `/caldav/<usuario>/<coleccion>/<item>`. La mayor parte de la plomería DAV
+  vive en `internal/dav`, escrita para exactamente ese layout. `go-webdav`
+  (la librería) se sigue usando donde brilla: el motor de filtros de
+  `calendar-query`/`multiget`, que incluso expande recurrencias.
+- **Almacenamiento byte a byte**: los items se guardan exactamente como los
+  envió el cliente y se sirven sin cambios, así que un volumen escrito por
+  davcloud es indistinguible de uno escrito por Radicale, en ambos sentidos.
+  Los metadatos de colección viven en los `.Radicale.props` propios de
+  Radicale (mismas claves, incluido el string separado por comas del
+  supported-calendar-component-set).
+- **La identidad es una cabecera**: se confía ciegamente en
+  `X-Remote-User`, así que el puerto nunca debe ser alcanzable sin el proxy
+  autenticador delante. En modo `-dav-root` el proxy elimina los prefijos
+  `/caldav`/`/carddav` y marca el endpoint con `X-Script-Name`; davcloud
+  sigue emitiendo hrefs prefijados, igual que hace Radicale.
+- **Una base de código, dos roles**: el mismo binario sirve la API DAV y
+  (en modo standalone) una pequeña web UI en React. Detrás de OpenCloud las
+  apps web son la UI, así que davcloud corre con `-dav-root` y no la sirve.
 
-go-webdav v0.7 deduce el tipo de recurso contando segmentos de la ruta y
-espera un nivel más que Radicale (`/user/calendars/cal1/x.ics` frente al
-plano `/user/cal1/x.ics`). Con el layout plano, su PROPFIND lista vacío, su
-MKCOL y su DELETE de CardDAV responden 403, y `Prefix` no lo puede arreglar
-porque siempre recorta el mismo path. `internal/dav` implementa PROPFIND
-(Depth 0/1/infinity, `prop`/`allprop`/`propname`, propstat 404 para
-propiedades desconocidas), MKCOL/MKCALENDAR, PROPPATCH (con atomicidad RFC
-4918), DELETE, OPTIONS, `sync-collection` (RFC 6578) y
-`/.well-known/caldav|carddav` con la semántica de Radicale, y delega las
-consultas (calendar-query, calendar-multiget y sus equivalentes de CardDAV)
-en go-webdav, cuyo motor de filtros ya expande RRULE/RDATE/EXDATE al evaluar
-los rangos de tiempo.
+## Cómo instalarlo
 
-Los items se guardan **byte a byte** tal como los envió el cliente (igual que
-Radicale), así que el volumen de datos sigue siendo intercambiable con uno de
-Radicale en ambos sentidos. Los metadatos de colección se leen y escriben en
-el formato propio de Radicale (`.Radicale.props`, incluido el string separado
-por comas del supported-calendar-component-set).
+Requisitos: Go 1.24+ para compilar. `npm` solo si quieres la web UI. Sin
+base de datos ni dependencias de runtime.
 
-## Desarrollo
-
-Terminal 1 (backend, modo dev con usuario forzado):
+**Compilar**
 
 ```bash
-go build ./... && go test ./...
-go run ./cmd/server -addr 127.0.0.1:5232 -data-dir ./data -dev-user alice
+git clone https://github.com/gnacho/davcloud && cd davcloud
+CGO_ENABLED=0 go build -trimpath \
+  -ldflags "-s -w -X main.version=$(git describe --tags --always) -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -o davcloud ./cmd/server
+./davcloud -version
 ```
 
-Terminal 2 (frontend con proxy inyectando `X-Remote-User`):
+**Probarlo standalone** (identidad simulada, sin proxy):
 
 ```bash
-cd web
-npm ci
-DAVCLOUD_DEV_USER=alice npm run dev   # http://localhost:5173
+./davcloud -addr 127.0.0.1:5232 -data-dir ./data -dev-user alice
+# en otra terminal: cualquier cliente CalDAV contra http://127.0.0.1:5232/caldav/
 ```
 
-## Producción con OpenCloud
+**Producción detrás de OpenCloud** (el camino probado; runbook completo con
+backup y rollback en [deploy/README.md](deploy/README.md)):
 
-El runbook de migración y el drill de rollback están en
-[deploy/README.md](deploy/README.md). En resumen:
-davcloud escucha en el mismo `127.0.0.1:5232` que usaba Radicale, sobre el
-mismo volumen de datos, así que el proxy no necesita cambios y el swap (y su
-rollback) es un cambio de servicio. Los clientes (DAVx⁵, iOS, GNOME,
-Thunderbird...) mantienen su configuración exacta: URL base
-`https://<tu-dominio>/caldav` y `.../carddav`, usuario + app token.
+1. Haz backup del directorio de datos de Radicale y cambia el servicio
+   manteniendo el mismo puerto:
 
-## Estado (verificado, no promesas)
+   ```ini
+   # /etc/systemd/system/davcloud.service (extracto)
+   [Service]
+   ExecStart=/usr/local/bin/davcloud -addr 127.0.0.1:5232 -data-dir /var/lib/radicale/collections -dav-root
+   User=radicale
+   ReadWritePaths=/var/lib/radicale/
+   ```
 
-Hecho y cubierto por tests (37) y pruebas con `curl` en vivo:
+2. Asegúrate de que las rutas del proxy apuntan a él e inyectan la identidad
+   (esto es lo que es un `proxy.yaml` de OpenCloud con Radicale, y davcloud
+   usa exactamente la misma forma):
 
-- PROPFIND con el layout plano de Radicale: Depth 0/1/infinity, `prop`,
-  `allprop`, `propname`, propstat 404 para propiedades desconocidas.
-- PROPPATCH con atomicidad RFC 4918: renombrar, `calendar-color`,
-  descripciones; props de cliente persistidas con las claves canónicas de
-  Radicale (`ICAL:calendar-color`, ...).
-- REPORT `calendar-query`, `calendar-multiget` (delegados), `sync-collection`
-  (RFC 6578, implementación propia), y expansión de recurrencias verificada
-  en las queries de rango, tolerante con RRULE rotas.
-- Escrituras atómicas (temp + fsync + rename) y condicionales `If-Match` /
-  `If-None-Match` conformes; ETag canónico entrecomillado; GET con 304.
-- Items guardados byte a byte (CRLF, UTF-8, props `X-`, parámetros,
-  `VALARM`); el vCard 3.0 no se reescribe a 4.0; el UID debe coincidir con el
-  nombre del recurso (igual que Radicale).
-- Compatibilidad con el volumen de Radicale verificada de extremo a extremo:
-  una copia de un volumen real de producción montada en davcloud lista,
-  sirve y escribe items con bytes idénticos.
+   ```yaml
+   additional_policies:
+     - name: default
+       routes:
+         - endpoint: /caldav/
+           backend: http://127.0.0.1:5232
+           remote_user_header: X-Remote-User
+           skip_x_access_token: true
+           additional_headers:
+             - X-Script-Name: /caldav
+         - endpoint: /carddav/
+           backend: http://127.0.0.1:5232
+           remote_user_header: X-Remote-User
+           skip_x_access_token: true
+           additional_headers:
+             - X-Script-Name: /carddav
+   ```
 
-Backlog (seguido en issues):
+3. Verifica (como lo llamaría el proxy, con tu id de usuario real):
 
-- Workflow de CI para la suite Go y el build web.
-- Migración de producción (fase 4) y soak + drill de rollback (fase 5).
-- Invitaciones iMIP, compartición de calendarios (fase 6; requiere ACLs que
-  el proxy no proporciona).
-- Validación con clientes reales (DAVx⁵, iOS, GNOME Online Accounts).
+   ```bash
+   curl -s -X PROPFIND -H 'Depth: 0' \
+     -H 'X-Script-Name: /caldav' -H 'X-Remote-User: <id-usuario>' \
+     http://127.0.0.1:5232/ | grep -o '<D:href>[^<]*</D:href>'
+   # /caldav/<id-usuario>/
+   ```
+
+El rollback es un cambio de servicio: para davcloud y arranca Radicale sobre
+el mismo volumen (layout y metadatos son byte-compatibles en ambos sentidos).
+
+## Estado
+
+Sirviendo producción. Cubierto por 37 tests de Go y 10 de la web, CI en cada
+push (test/lint/security/web) y un ensayo de migración contra una copia de un
+volumen real de producción. Las limitaciones conocidas están seguidas como
+issues: iMIP, compartición de calendarios, edición de recurrencias en la web.
 
 ## Licencia
 
-AGPL-3.0 (ver LICENSE). go-webdav es MIT; FullCalendar MIT; ical.js MPL-2.0.
+AGPL-3.0 (ver LICENSE). Dependencias: go-webdav MIT, go-ical MIT, go-vcard
+MIT, FullCalendar MIT, ical.js MPL-2.0.
