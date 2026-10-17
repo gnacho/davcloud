@@ -587,6 +587,65 @@ func TestReportTimeRangeHonoursTZID(t *testing.T) {
 	}
 }
 
+// TestCarddavQueryWithoutFilterIsNotEmpty is the regression test for a bug
+// found in production: go-webdav's carddav.Match answers "no match" to an
+// addressbook-query without <C:filter> (the "give me everything" form
+// opencloud-contacts sends), so the address book looked empty even though
+// writes worked. Our backend now treats the filterless query as match-all.
+func TestCarddavQueryWithoutFilterIsNotEmpty(t *testing.T) {
+	srv, _ := newTestServer(t)
+	book := srv.URL + "/carddav/alice/def-addressbook/"
+
+	contact := func(uid, fn string) string {
+		return "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:" + uid + "\r\nFN:" + fn + "\r\nTEL;TYPE=CELL:600\r\nEND:VCARD\r\n"
+	}
+	for _, c := range []struct{ uid, fn string }{{"c1", "Uno"}, {"c2", "Dos"}} {
+		if resp, body := do(t, "PUT", book+c.uid+".vcf", contact(c.uid, c.fn), map[string]string{
+			"Content-Type": "text/vcard",
+		}); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("PUT %s = %d: %s", c.uid, resp.StatusCode, body)
+		}
+	}
+
+	// The exact report opencloud-contacts sends: no <C:filter> at all.
+	query := `<?xml version="1.0" encoding="utf-8" ?>
+<C:addressbook-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav">
+  <D:prop>
+    <D:getetag/>
+    <C:address-data/>
+  </D:prop>
+</C:addressbook-query>`
+	resp, body := do(t, "REPORT", book, query, map[string]string{
+		"Depth":        "1",
+		"Content-Type": "application/xml",
+	})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("REPORT addressbook-query = %d, want 207: %s", resp.StatusCode, body)
+	}
+	ms := parseMultiStatus(t, body)
+	if len(ms.Responses) != 2 {
+		t.Fatalf("addressbook-query without filter returned %d responses, want 2: %s", len(ms.Responses), body)
+	}
+	if !strings.Contains(body, "FN:Uno") || !strings.Contains(body, "FN:Dos") {
+		t.Errorf("address-data missing the vCards: %s", body)
+	}
+
+	// A query WITH a filter keeps going through the library's matching.
+	filtered := strings.Replace(query, "</D:prop>",
+		"</D:prop><C:filter><C:prop-filter name=\"FN\"><C:text-match>Uno</C:text-match></C:prop-filter></C:filter>", 1)
+	resp, body = do(t, "REPORT", book, filtered, map[string]string{
+		"Depth":        "1",
+		"Content-Type": "application/xml",
+	})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("filtered REPORT = %d, want 207: %s", resp.StatusCode, body)
+	}
+	hrefs := strings.Join(hrefsOf(parseMultiStatus(t, body)), " ")
+	if !strings.Contains(hrefs, "c1.vcf") || strings.Contains(hrefs, "c2.vcf") {
+		t.Errorf("filtered query hrefs = %q, want only c1.vcf", hrefs)
+	}
+}
+
 // TestSyncCollection covers RFC 6578 with the semantics the multifilesystem
 // store can honestly provide: a stale or empty token gets the full listing,
 // a current token gets an empty response.
