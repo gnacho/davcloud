@@ -45,7 +45,7 @@ internal/store    → filesystem, layout compatible con Radicale (.Radicale.prop
 internal/caldav   → backend CalDAV delegado en go-webdav (REPORT queries)
 internal/carddav  → backend CardDAV delegado en go-webdav (REPORT queries)
 web/              → React 18 + Vite + Tailwind v4 + FullCalendar + tsdav + ical.js
-deploy/           → runbook de migración + overlay compose
+deploy/           → runbook de migración (binario + systemd)
 ```
 
 ### Por qué hay un handler DAV propio
@@ -88,8 +88,8 @@ DAVCLOUD_DEV_USER=alice npm run dev   # http://localhost:5173
 
 ## Producción con OpenCloud
 
-El runbook de migración (camino systemd nativo y camino compose) y el drill
-de rollback están en [deploy/README.md](deploy/README.md). En resumen:
+El runbook de migración y el drill de rollback están en
+[deploy/README.md](deploy/README.md). En resumen:
 davcloud escucha en el mismo `127.0.0.1:5232` que usaba Radicale, sobre el
 mismo volumen de datos, así que el proxy no necesita cambios y el swap (y su
 rollback) es un cambio de servicio. Los clientes (DAVx⁵, iOS, GNOME,
@@ -120,8 +120,6 @@ Hecho y cubierto por tests (37) y pruebas con `curl` en vivo:
 Backlog (seguido en issues):
 
 - Workflow de CI para la suite Go y el build web.
-- Construcción y publicación de la imagen de contenedor (necesita una
-  máquina con motor de contenedores).
 - Migración de producción (fase 4) y soak + drill de rollback (fase 5).
 - Invitaciones iMIP, compartición de calendarios (fase 6; requiere ACLs que
   el proxy no proporciona).

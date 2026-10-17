@@ -1,8 +1,8 @@
 # PLAN - davcloud: de esqueleto a reemplazo de Radicale
 
-Objetivo: que `docker compose` pueda sustituir `radicale/radicale.yml` por
-`deploy/opencloud-davcloud.yml` sin que DAVx⁵, Thunderbird, iOS ni las
-extensiones web (opencloud-agenda, opencloud-contacts) noten la diferencia.
+Objetivo: sustituir Radicale (binario + systemd en el CT) por davcloud sin
+que DAVx⁵, Thunderbird, iOS ni las extensiones web (opencloud-agenda,
+opencloud-contacts) noten la diferencia.
 
 ## Puntos a VERIFICAR primero (bloquean decisiones posteriores)
 
@@ -79,10 +79,12 @@ extensiones web (opencloud-agenda, opencloud-contacts) noten la diferencia.
 
 ## Fase 4 - Integración OpenCloud (semana 6)
 
-- Overlay en opencloud-compose real; app token desde la UI; verificar que
-  agenda y contacts (frank) cargan contra davcloud.
-- **Test de migración**: copia del volumen radicale-data real → montar en
-  davcloud → diff de colecciones/items visibles en la UI y en DAVx⁵.
+- Swap systemd en el CT real según `deploy/README.md` (backup, binario,
+  unit, swap de servicio); app token desde la UI; verificar que agenda y
+  contacts cargan contra davcloud.
+- **Test de migración**: HECHO en seco (17-Oct-2026): copia del volumen real
+  montada en davcloud, lectura/escritura byte a byte verificadas. Falta el
+  test en vivo (colecciones/items visibles en la UI y en DAVx⁵).
 - DAVx⁵ en el móvil real: sync bidireccional (crear en móvil, aparece en
   web, y viceversa).
 - **Criterio de salida**: un día de uso real sin discrepancias. Aquí se
