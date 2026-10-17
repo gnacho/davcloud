@@ -11,6 +11,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -113,13 +114,27 @@ func envOr(key, def string) string {
 	return def
 }
 
+// Build information, stamped at build time:
+//
+//	go build -ldflags "-X main.version=... -X main.commit=... -X main.date=..."
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 func main() {
+	showVersion := flag.Bool("version", false, "print version information and exit")
 	addr := flag.String("addr", envOr("DAVCLOUD_ADDR", ":5232"), "listen address (bind to the internal network ONLY)")
 	dataDir := flag.String("data-dir", envOr("DAVCLOUD_DATA", "./data"), "data directory (Radicale multifilesystem layout)")
 	uiDir := flag.String("ui-dir", envOr("DAVCLOUD_UI", "web/dist"), "directory with the built web UI (SPA)")
 	devUser := flag.String("dev-user", envOr("DAVCLOUD_DEV_USER", ""), "development only: force this user, ignore X-Remote-User")
 	davRoot := flag.Bool("dav-root", envOr("DAVCLOUD_DAV_ROOT", "") != "", "mount the DAV endpoints at / (mode used behind the OpenCloud proxy, which strips the /caldav and /carddav prefixes); the SPA is not served")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("davcloud %s (commit %s, built %s)\n", version, commit, date)
+		return
+	}
 
 	st := store.New(*dataDir)
 	if *devUser != "" {
@@ -129,7 +144,7 @@ func main() {
 		log.Printf("davcloud: DAV root mode (behind a prefix-stripping proxy), the SPA is not served")
 	}
 
-	log.Printf("davcloud listening on %s (data: %s, ui: %s)", *addr, *dataDir, *uiDir)
+	log.Printf("davcloud %s listening on %s (data: %s, ui: %s)", version, *addr, *dataDir, *uiDir)
 	if err := http.ListenAndServe(*addr, newHandler(st, *uiDir, *devUser, *davRoot)); err != nil {
 		log.Fatal(err)
 	}
