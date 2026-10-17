@@ -22,10 +22,9 @@ function esc(s: string): string {
 export function buildVCard(d: ContactDraft): string {
   const lines = [
     "BEGIN:VCARD",
-    "VERSION:4.0",
+    "VERSION:3.0",
     `UID:${d.uid ?? crypto.randomUUID()}`,
     `FN:${esc(d.fn)}`,
-    "KIND:individual",
   ];
   if (d.email) lines.push(`EMAIL;TYPE=home:${esc(d.email)}`);
   if (d.tel) lines.push(`TEL;TYPE=cell:${esc(d.tel)}`);
@@ -38,7 +37,9 @@ export function parseVCard(vcf: string, url: string, etag: string): Contact {
   const get = (name: string): string | undefined => {
     const re = new RegExp("^" + name + "(?:;[^:]*)?:(.+)$", "im");
     const m = vcf.match(re);
-    return m ? m[1].trim().replace(/\\(.)/g, "$1") : undefined;
+    // RFC 6350 unescaping: \n (or \N) is a newline, any other escaped char
+    // loses the backslash. Order matters: the newline first.
+    return m ? m[1].trim().replace(/\\n/gi, "\n").replace(/\\(.)/g, "$1") : undefined;
   };
   return {
     url,
