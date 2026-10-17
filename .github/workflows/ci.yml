@@ -45,9 +45,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # govulncheck@latest needs a recent toolchain; the module targets an
+      # older Go on purpose, so this job uses stable instead of go.mod.
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: "stable"
           cache: true
       - name: govulncheck (bloquea)
         run: |
