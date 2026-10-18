@@ -137,6 +137,30 @@ func cleanSeg(s string) (string, error) {
 	return s, nil
 }
 
+// cleanName is cleanSeg plus the rule that keeps server-managed files out of
+// the reach of clients: names with a leading dot (the ".Radicale.props"
+// metadata file of every collection and the ".tmp-*" files used by atomic
+// writes) and names with a trailing tilde are reserved. Radicale applies the
+// same rule through pathutils.is_safe_filesystem_path_component before it
+// touches the filesystem, which is what stops a client from deleting or
+// overwriting a collection's own metadata.
+func cleanName(s string) (string, error) {
+	if _, err := cleanSeg(s); err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, "~") {
+		return "", fmt.Errorf("store: reserved path segment %q", s)
+	}
+	return s, nil
+}
+
+// ValidName reports whether name is usable as a collection or object name on
+// the wire.
+func ValidName(name string) bool {
+	_, err := cleanName(name)
+	return err == nil
+}
+
 func (s *Store) userDir(user string) (string, error) {
 	u, err := cleanSeg(user)
 	if err != nil {
@@ -262,7 +286,7 @@ func (s *Store) ListCollections(user string) ([]Collection, error) {
 
 // GetCollection returns one collection by id.
 func (s *Store) GetCollection(user, id string) (Collection, error) {
-	if _, err := cleanSeg(id); err != nil {
+	if _, err := cleanName(id); err != nil {
 		return Collection{}, err
 	}
 	dir, err := s.userDir(user)
@@ -274,7 +298,7 @@ func (s *Store) GetCollection(user, id string) (Collection, error) {
 
 // CreateCollection creates a collection directory with props.
 func (s *Store) CreateCollection(user string, c Collection) error {
-	if _, err := cleanSeg(c.ID); err != nil {
+	if _, err := cleanName(c.ID); err != nil {
 		return err
 	}
 	dir, err := s.userDir(user)
@@ -296,7 +320,7 @@ func (s *Store) CreateCollection(user string, c Collection) error {
 
 // DeleteCollection removes a collection directory entirely.
 func (s *Store) DeleteCollection(user, id string) error {
-	if _, err := cleanSeg(id); err != nil {
+	if _, err := cleanName(id); err != nil {
 		return err
 	}
 	dir, err := s.userDir(user)
@@ -311,6 +335,9 @@ func (s *Store) DeleteCollection(user, id string) error {
 // Fixed keys are applied to their struct fields, everything else to Extra.
 // The write is atomic (same mechanism as items).
 func (s *Store) UpdateCollectionProps(user, id string, set map[string]string, remove []string) error {
+	if _, err := cleanName(id); err != nil {
+		return err
+	}
 	dir, err := s.userDir(user)
 	if err != nil {
 		return err
@@ -350,7 +377,7 @@ func (s *Store) UpdateCollectionProps(user, id string, set map[string]string, re
 }
 
 func (s *Store) collDir(user, coll string) (string, error) {
-	if _, err := cleanSeg(coll); err != nil {
+	if _, err := cleanName(coll); err != nil {
 		return "", err
 	}
 	dir, err := s.userDir(user)
@@ -372,7 +399,7 @@ func (s *Store) ListItems(user, coll string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() || e.Name() == PropsFile || strings.HasPrefix(e.Name(), ".tmp-") {
+		if e.IsDir() || !ValidName(e.Name()) {
 			continue
 		}
 		out = append(out, e.Name())
@@ -382,7 +409,7 @@ func (s *Store) ListItems(user, coll string) ([]string, error) {
 
 // ReadItem returns the raw content of an item.
 func (s *Store) ReadItem(user, coll, name string) ([]byte, error) {
-	if _, err := cleanSeg(name); err != nil {
+	if _, err := cleanName(name); err != nil {
 		return nil, err
 	}
 	dir, err := s.collDir(user, coll)
@@ -407,7 +434,7 @@ func (s *Store) ItemETag(user, coll, name string) (string, error) {
 
 // WriteItem writes an item atomically and returns its new ETag (sha256).
 func (s *Store) WriteItem(user, coll, name string, data []byte) (string, error) {
-	if _, err := cleanSeg(name); err != nil {
+	if _, err := cleanName(name); err != nil {
 		return "", err
 	}
 	dir, err := s.collDir(user, coll)
@@ -425,7 +452,7 @@ func (s *Store) WriteItem(user, coll, name string, data []byte) (string, error) 
 
 // DeleteItem removes an item. Returns os.ErrNotExist if missing.
 func (s *Store) DeleteItem(user, coll, name string) error {
-	if _, err := cleanSeg(name); err != nil {
+	if _, err := cleanName(name); err != nil {
 		return err
 	}
 	dir, err := s.collDir(user, coll)
@@ -437,7 +464,7 @@ func (s *Store) DeleteItem(user, coll, name string) error {
 
 // ItemModTime returns the modification time of an item.
 func (s *Store) ItemModTime(user, coll, name string) (time.Time, error) {
-	if _, err := cleanSeg(name); err != nil {
+	if _, err := cleanName(name); err != nil {
 		return time.Time{}, err
 	}
 	dir, err := s.collDir(user, coll)

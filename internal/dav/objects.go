@@ -41,6 +41,9 @@ func (h *Handler) resolveForWrite(r *http.Request) (*resource, error) {
 	if len(segs) != 3 || segs[0] != user {
 		return nil, &davError{code: http.StatusForbidden, msg: "dav: objects live at /<user>/<collection>/<item>"}
 	}
+	if !store.ValidName(segs[1]) || !store.ValidName(segs[2]) {
+		return nil, errReservedName
+	}
 	c, err := h.Store.GetCollection(user, segs[1])
 	if err != nil || c.Tag != h.Kind.collectionTag() {
 		return nil, &davError{code: http.StatusConflict, msg: "dav: the parent collection does not exist"}
