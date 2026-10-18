@@ -393,6 +393,149 @@ func TestPutRejectsMismatchedUID(t *testing.T) {
 	}
 }
 
+// twoUIDsICS carries two unrelated events, in the order that used to slip
+// through: validateItem kept the last UID it saw, so a body whose final UID
+// matched the resource name was accepted and the first event became a
+// component no client could address on its own.
+const twoUIDsICS = "BEGIN:VCALENDAR\r\n" +
+	"VERSION:2.0\r\n" +
+	"PRODID:-//davcloud//test//EN\r\n" +
+	"BEGIN:VEVENT\r\n" +
+	"UID:e1\r\n" +
+	"DTSTAMP:20260101T000000Z\r\n" +
+	"DTSTART:20260102T100000Z\r\n" +
+	"END:VEVENT\r\n" +
+	"BEGIN:VEVENT\r\n" +
+	"UID:e2\r\n" +
+	"DTSTAMP:20260101T000000Z\r\n" +
+	"DTSTART:20260103T100000Z\r\n" +
+	"END:VEVENT\r\n" +
+	"END:VCALENDAR\r\n"
+
+// noUIDICS holds a second component without UID, which used to be skipped by
+// the loop: the object was stored and one of its components was unaddressable.
+const noUIDICS = "BEGIN:VCALENDAR\r\n" +
+	"VERSION:2.0\r\n" +
+	"PRODID:-//davcloud//test//EN\r\n" +
+	"BEGIN:VEVENT\r\n" +
+	"UID:e1\r\n" +
+	"DTSTAMP:20260101T000000Z\r\n" +
+	"DTSTART:20260102T100000Z\r\n" +
+	"END:VEVENT\r\n" +
+	"BEGIN:VEVENT\r\n" +
+	"DTSTAMP:20260101T000000Z\r\n" +
+	"DTSTART:20260103T100000Z\r\n" +
+	"END:VEVENT\r\n" +
+	"END:VCALENDAR\r\n"
+
+// recurringWithOverrideICS is the legitimate multi-component body: a master
+// event plus one occurrence override, both with the same UID.
+const recurringWithOverrideICS = "BEGIN:VCALENDAR\r\n" +
+	"VERSION:2.0\r\n" +
+	"PRODID:-//davcloud//test//EN\r\n" +
+	"BEGIN:VEVENT\r\n" +
+	"UID:serie-1\r\n" +
+	"DTSTAMP:20260101T000000Z\r\n" +
+	"DTSTART:20260102T100000Z\r\n" +
+	"DTEND:20260102T110000Z\r\n" +
+	"RRULE:FREQ=DAILY;COUNT=3\r\n" +
+	"SUMMARY:serie\r\n" +
+	"END:VEVENT\r\n" +
+	"BEGIN:VEVENT\r\n" +
+	"UID:serie-1\r\n" +
+	"RECURRENCE-ID:20260104T100000Z\r\n" +
+	"DTSTAMP:20260101T000000Z\r\n" +
+	"DTSTART:20260104T120000Z\r\n" +
+	"DTEND:20260104T130000Z\r\n" +
+	"SUMMARY:serie movida\r\n" +
+	"END:VEVENT\r\n" +
+	"END:VCALENDAR\r\n"
+
+// TestPutRejectsMultipleUIDs: a calendar object resource holds one component
+// plus, for a recurring event, overrides sharing its UID (RFC 4791). Two
+// unrelated events under a single href share one ETag, so a client cannot
+// move, edit or delete them individually, and sync breaks. Radicale refuses
+// these bodies too.
+func TestPutRejectsMultipleUIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		url  string
+		body string
+		want string
+	}{
+		{"two different UIDs", "/caldav/alice/def-calendar/e2.ics", twoUIDsICS, "different UIDs"},
+		{"a component without UID", "/caldav/alice/def-calendar/e1.ics", noUIDICS, "without UID"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newTestServer(t)
+			url := srv.URL + tc.url
+			resp, body := do(t, "PUT", url, tc.body, map[string]string{
+				"Content-Type": "text/calendar",
+			})
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("PUT = %d, want 400: %s", resp.StatusCode, body)
+			}
+			if !strings.Contains(body, tc.want) {
+				t.Errorf("refusal does not mention %q: %s", tc.want, body)
+			}
+			resp, _ = do(t, "GET", url, "", nil)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("GET after the rejected PUT = %d, want 404 (nothing may be written)", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestPutAcceptsRecurringEventWithOverride keeps the legitimate case working:
+// overrides that share the master UID are part of the same resource.
+func TestPutAcceptsRecurringEventWithOverride(t *testing.T) {
+	srv, _ := newTestServer(t)
+	url := srv.URL + "/caldav/alice/def-calendar/serie-1.ics"
+	resp, body := do(t, "PUT", url, recurringWithOverrideICS, map[string]string{
+		"Content-Type": "text/calendar",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT of a master event plus a same-UID override = %d, want 201: %s", resp.StatusCode, body)
+	}
+	resp, body = do(t, "GET", url, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(body, "RECURRENCE-ID:20260104T100000Z") {
+		t.Errorf("GET lost the override: %s", body)
+	}
+}
+
+// TestPutRejectsMultipleVCards applies the same rule to an address book: one
+// vCard per resource. The body below holds two cards and its first card
+// matches the resource name, which is the shape that used to be stored.
+func TestPutRejectsMultipleVCards(t *testing.T) {
+	srv, _ := newTestServer(t)
+	url := srv.URL + "/carddav/alice/def-addressbook/c1.vcf"
+	twoCards := testVCF + strings.Replace(testVCF, "UID:c1", "UID:c2", 1)
+
+	resp, body := do(t, "PUT", url, twoCards, map[string]string{
+		"Content-Type": "text/vcard",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("PUT of two vCards = %d, want 400: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "more than one vCard") {
+		t.Errorf("refusal does not mention the second card: %s", body)
+	}
+	resp, _ = do(t, "GET", url, "", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET after the rejected PUT = %d, want 404 (nothing may be written)", resp.StatusCode)
+	}
+
+	resp, body = do(t, "PUT", url, testVCF, map[string]string{
+		"Content-Type": "text/vcard",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("PUT of a single vCard = %d, want 201: %s", resp.StatusCode, body)
+	}
+}
+
 // TestPutAcceptsLaxContentType documents that PUT validates the content, not
 // the Content-Type header (issue #5): a parseable stream is accepted even
 // with a lax media type, an unparseable one is rejected.

@@ -60,18 +60,38 @@ func (h *Handler) validateItem(name string, raw []byte) (uid string, err error) 
 		if err != nil {
 			return "", fmt.Errorf("dav: the request body is not a valid iCalendar stream")
 		}
+		// RFC 4791: a calendar object resource holds one component plus, for a
+		// recurring event, overrides that share its UID and carry
+		// RECURRENCE-ID. Several unrelated events under one href would share a
+		// single ETag, so no client could move, edit or delete them on their
+		// own, and a component without UID would be unaddressable.
 		for _, comp := range cal.Children {
 			switch comp.Name {
 			case "VEVENT", "VTODO", "VJOURNAL":
-				if p := comp.Props.Get("UID"); p != nil {
+				p := comp.Props.Get("UID")
+				if p == nil || p.Value == "" {
+					return "", fmt.Errorf("dav: the calendar object has a %s without UID", comp.Name)
+				}
+				if uid == "" {
 					uid = p.Value
+					continue
+				}
+				if uid != p.Value {
+					return "", fmt.Errorf("dav: the calendar object has components with different UIDs: %q and %q", uid, p.Value)
 				}
 			}
 		}
 	} else {
-		card, err := vcard.NewDecoder(bytes.NewReader(raw)).Decode()
+		dec := vcard.NewDecoder(bytes.NewReader(raw))
+		card, err := dec.Decode()
 		if err != nil {
 			return "", fmt.Errorf("dav: the request body is not a valid vCard stream")
+		}
+		// One vCard per resource, for the same reason as iCalendar. The
+		// decoder stops at the end of a card, so a second card that decodes
+		// means the body carries one no href could ever address.
+		if _, err := dec.Decode(); err == nil {
+			return "", fmt.Errorf("dav: the address object has more than one vCard")
 		}
 		uid = card.Value("UID")
 	}
