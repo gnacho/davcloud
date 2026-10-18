@@ -121,6 +121,12 @@ WantedBy=multi-user.target
 
 Sin `-dev-user` en producción: la identidad SIEMPRE la inyecta el proxy.
 
+Los límites por defecto valen tal cual para este despliegue: 100 MiB por
+petición, 10 MiB por objeto y 10000 instancias de recurrencia expandidas (los
+mismos órdenes de magnitud que `max_content_length`, `max_resource_size` y
+`max_expand_occurrence` de Radicale). Se cambian con `-max-request-size`,
+`-max-item-size` y `-max-expand`, o con las variables `DAVCLOUD_MAX_*`.
+
 ## 4. Swap (transparente para el proxy)
 
 ```

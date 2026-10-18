@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"davcloud/internal/auth"
@@ -66,7 +67,7 @@ func parsePropfind(r *http.Request) (*propfindRequest, error) {
 	req := &propfindRequest{}
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		return nil, &davError{code: http.StatusBadRequest, msg: "dav: cannot read request body"}
+		return nil, bodyError(err, "dav: cannot read request body")
 	}
 	if len(strings.TrimSpace(string(data))) == 0 {
 		req.AllProp = true // an empty body means allprop
@@ -306,6 +307,15 @@ func (h *Handler) propsForResource(r *http.Request, res *resource) []propEntry {
 			{nsDAV, "getcontenttype", esc(h.contentType())},
 			{nsCS, "getctag", esc(h.ctag(res.user, res.coll))},
 			{nsDAV, "sync-token", esc(h.syncToken(res.user, res.coll))},
+		}
+		if h.MaxItemSize > 0 {
+			// The cap the endpoint applies to a single object, announced so a
+			// well-behaved client can refuse to send what will not be stored.
+			ns := nsCalDAV
+			if h.Kind == KindAddressBook {
+				ns = nsCardDAV
+			}
+			props = append(props, propEntry{ns, "max-resource-size", strconv.FormatInt(h.MaxItemSize, 10)})
 		}
 		if h.Kind == KindCalendar {
 			props = append(props, propEntry{

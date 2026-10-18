@@ -915,7 +915,7 @@ func TestProppatchErrors(t *testing.T) {
 // (/caldav/<user>/... and /carddav/<user>/...).
 func TestProxyForwardsWithoutPrefix(t *testing.T) {
 	dir := t.TempDir()
-	srv := httptest.NewServer(newHandler(store.New(dir), filepath.Join(dir, "missing-ui"), "alice", true))
+	srv := httptest.NewServer(newHandler(store.New(dir), filepath.Join(dir, "missing-ui"), "alice", true, defaultLimits()))
 	t.Cleanup(srv.Close)
 
 	// CalDAV: X-Script-Name /caldav, request path without the prefix.
@@ -1065,7 +1065,7 @@ func TestSpaFallbackStillWorks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>spa</html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(newHandler(store.New(t.TempDir()), dir, "alice", false))
+	srv := httptest.NewServer(newHandler(store.New(t.TempDir()), dir, "alice", false, defaultLimits()))
 	t.Cleanup(srv.Close)
 
 	resp, body := do(t, "GET", srv.URL+"/some/client/route", "", nil)
