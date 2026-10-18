@@ -4,12 +4,13 @@ Objetivo: sustituir Radicale (binario + systemd en un contenedor) por davcloud
 sin que DAVx⁵, Thunderbird, iOS ni las extensiones web (opencloud-agenda,
 opencloud-contacts) noten la diferencia.
 
-Estado al 18-Oct-2026: **fases 0-4 completadas** (issues #1-#9 y #21 cerrados;
-davcloud es el servidor DAV de producción desde el 17-Oct) y **fase 5 en curso**
+Estado al 18-Oct-2026: **fases 0-4 y 6 completadas** (issues #1-#9, #21 y #43
+cerrados; davcloud es el servidor DAV de producción desde el 17-Oct y la
+release `v0.2.0` ya está publicada con binarios e imagen) y **fase 5 en curso**
 (soak en marcha; el **drill de rollback pasó el 18-Oct-2026**, issue #22).
 El despliegue propio **no usa Docker**: binario estático + systemd (ver
 `deploy/README.md`); la imagen de contenedor existe para quien prefiera ese
-camino (fase 6). Repo público desde el 18-Oct-2026, licencia AGPL-3.0.
+camino. Repo público desde el 18-Oct-2026, licencia AGPL-3.0.
 
 ## Hecho
 
@@ -59,14 +60,14 @@ camino (fase 6). Repo público desde el 18-Oct-2026, licencia AGPL-3.0.
   patológicas (un `calendar-query` `SECONDLY` que antes no terminaba en 25 s
   responde 207 en 0,0016 s). Desplegado en producción el mismo día, con el
   rechazo verificado en vivo.
+- **Fase 6 - distribución** (issue #43, 18-Oct-2026): release `v0.2.0` con
+  binarios estáticos `linux/amd64` y `linux/arm64` (y su `sha256`) e imagen
+  multi-arch pública en `ghcr.io/gnacho/davcloud`, verificados descargando el
+  asset y tirando del registro sin credenciales. El `Dockerfile` ya no depende
+  de `go mod tidy` y sella la versión por build args; la CI construye la imagen
+  en cada push y cada PR. Versiones de `0.2` en `0.2`.
 
 ## Pendiente (issues)
-
-- **#43 - Fase 6: distribución** (abierta el 18-Oct-2026): binarios
-  `linux/amd64` y `linux/arm64` por tag e imagen multi-arch en
-  `ghcr.io/gnacho/davcloud`, para que probarlo no exija toolchain. El
-  despliegue propio no cambia. Versiones de `0.2` en `0.2` (`v0.2.0`,
-  `v0.4.0`, ...).
 
 - **#22 - Fase 5: soak + drill de rollback** (soak en curso desde el 17-Oct:
   davcloud es el único servidor DAV; el drill ya pasó el 18-Oct-2026, ver
