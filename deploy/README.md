@@ -13,11 +13,46 @@ usuario. Por eso davcloud arranca con `-dav-root`.
 
 ## 0. Backup (obligatorio)
 
-Haz copia fría del volumen antes de nada (si el contenedor no está cubierto
-por backups automáticos, es la única red de seguridad):
+El volumen entero es `/var/lib/radicale` (dentro vive `collections/`). Copia
+antes de nada: si el contenedor no está cubierto por backups automáticos, es
+la única red de seguridad.
+
+Copia con el servicio parado (fría):
 
 ```
 pct exec <ctid> -- sh -c 'systemctl stop radicale && cp -a /var/lib/radicale /var/lib/radicale.bak-$(date +%Y%m%d) && systemctl start radicale'
+```
+
+Copia con el servicio en marcha (en caliente): solo vale si luego **verificas
+un manifiesto**, porque un fichero puede copiarse a medias. Con el escritor DAV
+parado en la práctica (nadie escribiendo en ese momento) la copia en caliente
+es segura, pero la comprobación es la que lo demuestra:
+
+```
+pct exec <ctid> -- bash -s <<'EOF'
+cd /var/lib/radicale
+find collections -type f -print0 | xargs -0 sha256sum | LC_ALL=C sort > /tmp/manifest-src.txt
+DEST=/var/lib/radicale.bak-$(date +%Y%m%d-%H%M%S)
+cp -a /var/lib/radicale "$DEST"
+cd "$DEST" && find collections -type f -print0 | xargs -0 sha256sum | LC_ALL=C sort > /tmp/manifest-bak.txt
+diff /tmp/manifest-src.txt /tmp/manifest-bak.txt && echo "COPIA IDENTICA: OK"
+EOF
+```
+
+Dos detalles que cuestan tiempo si no se saben:
+
+- Ordena con `LC_ALL=C` en AMBOS lados. El orden de `sort` cambia con el
+  locale y un diff entre dos manifiestos equivalentes te hará perseguir una
+  diferencia que no existe.
+- Los hashes no dicen nada del propietario: al restaurar hay que reponer
+  `radicale:radicale` (el unit corre como `radicale`).
+
+Copia **fuera** del contenedor (recomendado: es la que sobrevive a perderlo):
+
+```
+pct exec <ctid> -- tar czf /root/radicale-vol-$(date +%Y%m%d-%H%M%S).tgz -C /var/lib radicale
+pct exec <ctid> -- cat /root/radicale-vol-<stamp>.tgz > ./radicale-vol-<stamp>.tgz
+sha256sum ./radicale-vol-<stamp>.tgz    # compara con el sha256 sacado dentro del CT
 ```
 
 ## 1. Binario estático
@@ -129,3 +164,51 @@ Después de un periodo con davcloud, arrancar Radicale y comprobar que ve los
 calendarios y eventos escritos por davcloud (mismos items, mismo layout, y el
 component-set en formato string). Solo cuando este drill pase se puede dar el
 cambio por definitivo.
+
+## 7. Restore del volumen (verificado)
+
+Procedimiento comprobado: extraer la copia, reponer propietario, comparar el
+manifiesto con el del volumen original y (si quieres) arrancar un davcloud
+aparte sobre la copia para verla servida antes de tocar producción.
+
+```
+pct exec <ctid> -- bash -s <<'EOF'
+set -e
+TMP=/tmp/restore-check
+rm -rf $TMP && mkdir -p $TMP
+tar xzf /root/radicale-vol-<stamp>.tgz -C $TMP
+chown -R radicale:radicale $TMP/radicale
+cd $TMP/radicale
+find collections -type f -print0 | xargs -0 sha256sum | LC_ALL=C sort | sha256sum
+# compara este hash con el del manifiesto del volumen de origen
+EOF
+```
+
+Servirlo en un puerto aparte, sin tocar el de producción:
+
+```
+pct exec <ctid> -- bash -c 'timeout 30 runuser -u radicale -- /usr/local/bin/davcloud \
+  -addr 127.0.0.1:15233 -data-dir /tmp/restore-check/radicale/collections -dav-root &' 
+pct exec <ctid> -- curl -s -X PROPFIND -H 'Depth: 1' -H 'X-Script-Name: /carddav' \
+  -H 'X-Remote-User: <uuid>' http://127.0.0.1:15233/<uuid>/def-addressbook/
+```
+
+Ojo al comprobar: un PROPFIND con un `X-Remote-User` que no exista en el
+volumen **crea** sus colecciones vacías (bootstrap automático), así que el
+manifiesto cambia por tu culpa. Compara el manifiesto justo después de
+extraer, antes de arrancar nada.
+
+Restaurar SOBRE el volumen en uso:
+
+```
+pct exec <ctid> -- sh -c 'systemctl stop davcloud \
+  && mv /var/lib/radicale /var/lib/radicale.roto-$(date +%Y%m%d-%H%M%S) \
+  && tar xzf /root/radicale-vol-<stamp>.tgz -C /var/lib \
+  && chown -R radicale:radicale /var/lib/radicale \
+  && systemctl start davcloud'
+```
+
+Este último paso es el único del runbook que no se ha ejercitado todavía: la
+copia y la verificación sí, y el arranque sobre la copia también, pero el
+reemplazo del volumen en producción no se ha hecho nunca (no ha hecho falta).
+Se prueba en el drill de la fase 5, o antes si surge la necesidad.
