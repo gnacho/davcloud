@@ -158,6 +158,21 @@ backup y rollback en [deploy/README.md](deploy/README.md)):
 El rollback es un cambio de servicio: para davcloud y arranca Radicale sobre
 el mismo volumen (layout y metadatos son byte-compatibles en ambos sentidos).
 
+**Límites** (los valores por defecto están elegidos para coincidir con la
+configuración de Radicale):
+
+| Flag | Por defecto | Qué limita |
+|---|---|---|
+| `-max-request-size` | 100 MiB | el cuerpo de cualquier petición; por encima responde 413 |
+| `-max-item-size` | 10 MiB | un objeto de calendario o una vCard, anunciado al cliente como `max-resource-size` |
+| `-max-expand` | 10000 | las instancias de recurrencia que un objeto puede expandir al resolver una consulta por rango; por encima, el objeto se compara por sus fechas simples |
+
+Cada uno se puede fijar también por entorno (`DAVCLOUD_MAX_REQUEST_SIZE`,
+`DAVCLOUD_MAX_ITEM_SIZE`, `DAVCLOUD_MAX_EXPAND`). El servidor HTTP se construye
+con timeouts explícitos (`ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`,
+`IdleTimeout`, `MaxHeaderBytes`) en vez de con los valores por defecto de Go,
+que no pone ninguno.
+
 ## Estado
 
 En uso diario como servidor DAV detrás del despliegue de OpenCloud del autor. El

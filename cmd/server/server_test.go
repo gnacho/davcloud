@@ -41,7 +41,7 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	st := store.New(dir)
-	srv := httptest.NewServer(newHandler(st, filepath.Join(dir, "missing-ui"), "alice", false))
+	srv := httptest.NewServer(newHandler(st, filepath.Join(dir, "missing-ui"), "alice", false, defaultLimits()))
 	t.Cleanup(srv.Close)
 	return srv, dir
 }
@@ -236,7 +236,7 @@ func TestCardDAVSmokeAndConditionals(t *testing.T) {
 func TestIdentityIsRequired(t *testing.T) {
 	dir := t.TempDir()
 	st := store.New(dir)
-	srv := httptest.NewServer(newHandler(st, filepath.Join(dir, "missing-ui"), "", false))
+	srv := httptest.NewServer(newHandler(st, filepath.Join(dir, "missing-ui"), "", false, defaultLimits()))
 	t.Cleanup(srv.Close)
 
 	resp, _ := do(t, "PROPFIND", srv.URL+"/caldav/", propfindBody, map[string]string{

@@ -128,9 +128,14 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if h.MaxItemSize > 0 {
+		// The object cap is applied while reading, so an oversized body is never
+		// buffered in full and no partial file is left behind.
+		r.Body = http.MaxBytesReader(w, r.Body, h.MaxItemSize)
+	}
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		return &davError{code: http.StatusBadRequest, msg: "dav: cannot read the request body"}
+		return bodyError(err, "dav: cannot read the request body")
 	}
 	if _, err := h.validateItem(res.item, raw); err != nil {
 		return &davError{code: http.StatusBadRequest, msg: err.Error()}

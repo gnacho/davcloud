@@ -45,7 +45,7 @@ func reportRootName(raw []byte) xml.Name {
 func (h *Handler) handleReport(w http.ResponseWriter, r *http.Request) error {
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		return &davError{code: http.StatusBadRequest, msg: "dav: cannot read the request body"}
+		return bodyError(err, "dav: cannot read the request body")
 	}
 	if name := reportRootName(raw); name.Space == nsDAV && name.Local == "sync-collection" {
 		if err := h.handleSyncCollection(w, r, raw); err != nil {

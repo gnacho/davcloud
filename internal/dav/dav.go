@@ -21,6 +21,7 @@
 package dav
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -55,6 +56,9 @@ type Handler struct {
 	Store  *store.Store
 	Prefix string       // mount prefix, e.g. "/caldav"
 	Legacy http.Handler // library handler for REPORT/GET/PUT/DELETE/...
+	// MaxItemSize is the largest object body the endpoint accepts, in bytes
+	// (0 means no endpoint-level cap, only the request cap of the server).
+	MaxItemSize int64
 }
 
 // resource is the resolved target of a request.
@@ -295,6 +299,20 @@ func writeError(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
+// bodyError maps a body read or decode error to a DAV status: the server caps
+// every request body with http.MaxBytesReader, so an oversized one is a 413
+// and anything else is a malformed request.
+func bodyError(err error, what string) error {
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		return &davError{
+			code: http.StatusRequestEntityTooLarge,
+			msg:  fmt.Sprintf("dav: the request body exceeds the %d byte limit", mbe.Limit),
+		}
+	}
+	return &davError{code: http.StatusBadRequest, msg: what}
+}
+
 // handleDelete removes a collection or an object. Radicale answers 204 on
 // success and 404 when the resource does not exist.
 func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) error {
@@ -341,7 +359,7 @@ func (h *Handler) handleMkcol(w http.ResponseWriter, r *http.Request) error {
 	var body mkcolBody
 	if r.Body != nil {
 		if err := decodeXMLBody(r, &body); err != nil {
-			return &davError{code: http.StatusBadRequest, msg: "dav: malformed request body"}
+			return bodyError(err, "dav: malformed request body")
 		}
 	}
 	kind := h.Kind

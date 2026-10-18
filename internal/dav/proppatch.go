@@ -114,7 +114,7 @@ type propUpdateBody struct {
 func parsePropUpdate(r *http.Request) (*propUpdateBody, error) {
 	var body propUpdateBody
 	if err := decodeXMLBody(r, &body); err != nil {
-		return nil, &davError{code: http.StatusBadRequest, msg: "dav: malformed propertyupdate body"}
+		return nil, bodyError(err, "dav: malformed propertyupdate body")
 	}
 	return &body, nil
 }

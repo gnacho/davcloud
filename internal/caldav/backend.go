@@ -24,7 +24,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/emersion/go-ical"
 	"github.com/emersion/go-webdav"
@@ -41,7 +43,17 @@ type Backend struct {
 	// cross the library handler are server paths and include it, while the
 	// store only knows the local "/<user>/<collection>[/<item>]" layout.
 	Prefix string
+	// MaxExpandedInstances caps the recurrence instances one object may produce
+	// while a time-range query is being matched (0 means
+	// defaultMaxExpandedInstances).
+	MaxExpandedInstances int
 }
+
+// defaultMaxExpandedInstances mirrors Radicale's max_expand_occurrence (10000).
+// The expansion itself happens inside the library's caldav.Match, which has no
+// bound of its own, so the cap is applied here by estimating the instances an
+// object needs before the query is delegated.
+const defaultMaxExpandedInstances = 10000
 
 // New creates the backend mounted at prefix.
 func New(st *store.Store, prefix string) *Backend {
@@ -273,8 +285,17 @@ func (b *Backend) QueryCalendarObjects(ctx context.Context, path string, query *
 	if query == nil {
 		return objs, nil
 	}
+	limit := b.MaxExpandedInstances
+	if limit <= 0 {
+		limit = defaultMaxExpandedInstances
+	}
+	ranges := queryRanges(&query.CompFilter)
 	var out []webdavcaldav.CalendarObject
 	for _, obj := range objs {
+		if overInstanceBudget(obj.Data.Component, ranges, limit) {
+			log.Printf("caldav: %s expands to more than %d instances in the requested range, matching it as a single event", obj.Path, limit)
+			stripRecurrence(obj.Data.Component)
+		}
 		ok, err := webdavcaldav.Match(query.CompFilter, &obj)
 		if err != nil {
 			log.Printf("caldav: recurrence expansion failed for %s (%v), matching as a single event", obj.Path, err)
@@ -302,6 +323,105 @@ func stripRecurrence(comp *ical.Component) {
 	for _, child := range comp.Children {
 		stripRecurrence(child)
 	}
+}
+
+// timeRange is a [start, end] pair taken from a component filter.
+type timeRange struct {
+	start, end time.Time
+}
+
+// queryRanges collects the time ranges of a calendar-query filter, nested ones
+// included: clients put the range in the VEVENT/VTODO/VJOURNAL filter, below
+// the VCALENDAR one.
+func queryRanges(f *webdavcaldav.CompFilter) []timeRange {
+	var out []timeRange
+	if !f.Start.IsZero() {
+		out = append(out, timeRange{f.Start, f.End})
+	}
+	for i := range f.Comps {
+		out = append(out, queryRanges(&f.Comps[i])...)
+	}
+	return out
+}
+
+// overInstanceBudget reports whether expanding the recurrence of any component
+// of the object would exceed limit instances for any of the requested ranges.
+func overInstanceBudget(comp *ical.Component, ranges []timeRange, limit int) bool {
+	for _, child := range comp.Children {
+		rule := child.Props.Get("RRULE")
+		if rule == nil {
+			continue
+		}
+		for _, r := range ranges {
+			if instanceBudget(rule.Value, r.start, r.end) > limit {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// instanceBudget is a deliberately generous upper bound of the instances a
+// recurrence generates inside [start, end]. Its only purpose is to stop a
+// client from making the server expand a recurrence pathologically, so
+// rounding errors are acceptable as long as the bound is never an underestimate
+// that would wrongly let the expansion through.
+func instanceBudget(rrule string, start, end time.Time) int {
+	perInterval := map[string]int64{
+		"SECONDLY": 1,
+		"MINUTELY": 60,
+		"HOURLY":   3600,
+		"DAILY":    86400,
+		"WEEKLY":   604800,
+		// Average lengths: a smaller step yields a larger bound, which is the
+		// safe direction for a cap.
+		"MONTHLY": 2629746,
+		"YEARLY":  31556952,
+	}
+
+	var freq string
+	interval := int64(1)
+	for _, part := range strings.Split(rrule, ";") {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch strings.ToUpper(strings.TrimSpace(key)) {
+		case "FREQ":
+			freq = strings.ToUpper(value)
+		case "INTERVAL":
+			if n, err := strconv.ParseInt(value, 10, 64); err == nil && n > 0 {
+				interval = n
+			}
+		case "COUNT":
+			if n, err := strconv.ParseInt(value, 10, 64); err == nil && n >= 0 {
+				return int(n)
+			}
+		case "UNTIL":
+			if t, err := parseICalTime(value); err == nil && t.Before(end) {
+				end = t
+			}
+		}
+	}
+
+	step, ok := perInterval[freq]
+	if !ok || !end.After(start) {
+		return 1
+	}
+	seconds := int64(end.Sub(start) / time.Second)
+	return int(seconds/(step*interval)) + 2
+}
+
+// parseICalTime parses the value of UNTIL, which is a DATE-TIME (optionally in
+// UTC) or a DATE.
+func parseICalTime(value string) (time.Time, error) {
+	for _, layout := range []string{"20060102T150405Z", "20060102T150405", "20060102"} {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("caldav: cannot parse iCalendar time %q", value)
 }
 
 func encodeICS(cal *ical.Calendar) ([]byte, error) {
