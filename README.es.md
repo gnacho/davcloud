@@ -153,7 +153,10 @@ el mismo volumen (layout y metadatos son byte-compatibles en ambos sentidos).
 
 ## Estado
 
-Sirviendo producción. Cubierto por 37 tests de Go y 10 de la web, CI en cada
+En uso diario como servidor DAV detrás del despliegue de OpenCloud del autor;
+el periodo de soak está en marcha y el drill de rollback sigue pendiente, así
+que es software en desarrollo activo. La lista de fases y lo que queda está en
+[PLAN.md](PLAN.md). Cubierto por 40 tests de Go y 10 de la web, CI en cada
 push (test/lint/security/web) y un ensayo de migración contra una copia de un
 volumen real de producción. Las limitaciones conocidas están seguidas como
 issues: iMIP, compartición de calendarios, edición de recurrencias en la web.

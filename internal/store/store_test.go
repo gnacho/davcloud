@@ -51,7 +51,8 @@ func TestEnsureUserCreatesDefaultsAndIsIdempotent(t *testing.T) {
 }
 
 // TestReadsRealRadicaleProps is a compatibility regression against the exact
-// .Radicale.props read from a live Radicale deployment (CT 4125): the
+// .Radicale.props read from a live Radicale deployment (in a container,
+// behind an OpenCloud proxy): the
 // supported-calendar-component-set is a comma separated STRING, not a JSON
 // array, and it must be written back in that same shape so the volume stays
 // interchangeable in both directions.

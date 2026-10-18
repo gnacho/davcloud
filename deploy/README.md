@@ -1,9 +1,9 @@
 # Despliegue de davcloud en sustitución de Radicale
 
 davcloud es un binario estático de Go: no hay contenedores por medio. El
-despliegue real (CT 4125, nodo4) sustituye el servicio systemd de Radicale por
-uno propio, sobre el MISMO puerto y el MISMO volumen, así que el proxy de
-OpenCloud no se toca.
+despliegue de referencia (un contenedor LXC sobre Proxmox, en nuestro caso)
+sustituye el servicio systemd de Radicale por uno propio, sobre el MISMO
+puerto y el MISMO volumen, así que el proxy de OpenCloud no se toca.
 
 Contrato que el proxy ya cumple y que NO hay que cambiar (verificado en
 producción, `proxy.yaml`): reenvía `/caldav/` y `/carddav/` a
@@ -13,10 +13,11 @@ usuario. Por eso davcloud arranca con `-dav-root`.
 
 ## 0. Backup (obligatorio)
 
-El CT está fuera de PBS: copia fría del volumen antes de nada.
+Haz copia fría del volumen antes de nada (si el contenedor no está cubierto
+por backups automáticos, es la única red de seguridad):
 
 ```
-pct exec 4125 -- sh -c 'systemctl stop radicale && cp -a /var/lib/radicale /var/lib/radicale.bak-$(date +%Y%m%d) && systemctl start radicale'
+pct exec <ctid> -- sh -c 'systemctl stop radicale && cp -a /var/lib/radicale /var/lib/radicale.bak-$(date +%Y%m%d) && systemctl start radicale'
 ```
 
 ## 1. Binario estático
@@ -35,8 +36,8 @@ Subida al CT (el `scp` del binario en marcha da "Text file busy": parar el
 servicio antes del `mv`, como en ocapps):
 
 ```
-scp -P 2222 davcloud root@nodo4.domatix.com:/root/davcloud-new
-pct push 4125 /root/davcloud-new /usr/local/bin/davcloud --perms 755
+scp davcloud root@<your-host>:/root/davcloud-new   # -P <port> si tu SSH no es el 22
+pct push <ctid> /root/davcloud-new /usr/local/bin/davcloud --perms 755
 ```
 
 ## 2. Web UI compilada (opcional)
@@ -46,8 +47,10 @@ este paso es solo si quieres conservar la UI para uso directo:
 
 ```
 cd web && npm ci && npm run build
-pct push 4125 web/dist root@nodo4.domatix.com... # o copiala fuera si no la vas a usar
+pct push <ctid> web/dist /srv/davcloud-web --recursive
 ```
+
+Si la sirves, apunta el binario a ese directorio con `-ui-dir /srv/davcloud-web`.
 
 ## 3. Unit systemd (mismo puerto, mismo volumen, mismo usuario)
 
@@ -86,7 +89,7 @@ Sin `-dev-user` en producción: la identidad SIEMPRE la inyecta el proxy.
 ## 4. Swap (transparente para el proxy)
 
 ```
-pct exec 4125 -- sh -c 'systemctl stop radicale && systemctl disable radicale && systemctl daemon-reload && systemctl enable --now davcloud'
+pct exec <ctid> -- sh -c 'systemctl stop radicale && systemctl disable radicale && systemctl daemon-reload && systemctl enable --now davcloud'
 ```
 
 ## 5. Verificación (dentro del CT, sin tocar el proxy)
@@ -108,9 +111,10 @@ curl -s -X REPORT -H 'X-Script-Name: /caldav' -H 'X-Remote-User: <uuid>' \
 ```
 
 Y desde fuera (navegador): abrir la app agenda de OpenCloud y comprobar que
-los calendarios y eventos reales aparecen. **No hacer `curl` sin auth contra
-`drive.domatix.cloud`**: el fail2ban del NPM banea la IP de casa por 401
-repetidos (lección del 13-Sep-2026).
+los calendarios y eventos reales aparecen. **No hagas `curl` sin autenticar
+contra el hostname público para "ver si responde"**: si delante hay un
+fail2ban, una racha de 401 te banea la IP y te deja fuera del servicio (nos
+pasó: el corte alcanza a toda la red de la que salgas).
 
 ## 6. Rollback drill (fase 5 del PLAN)
 
@@ -118,7 +122,7 @@ El volumen es byte-compatible en ambos sentidos (davcloud guarda los items
 tal cual y las props de colección en el mismo formato de Radicale):
 
 ```
-pct exec 4125 -- sh -c 'systemctl stop davcloud && systemctl start radicale'
+pct exec <ctid> -- sh -c 'systemctl stop davcloud && systemctl start radicale'
 ```
 
 Después de un periodo con davcloud, arrancar Radicale y comprobar que ve los
