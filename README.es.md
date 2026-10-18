@@ -217,10 +217,13 @@ otra vez, leyó todo lo escrito por davcloud (mismos UID y campos, mismas props
 de colección) y no tocó los ficheros, así que volver atrás es un cambio de
 servicio. El periodo de soak sigue en marcha, así que es software en desarrollo
 activo. La lista de fases y lo que queda está en
-[PLAN.md](PLAN.md). Cubierto por 40 tests de Go y 10 de la web, CI en cada
-push (test/lint/security/web) y un ensayo de migración contra una copia de un
-volumen real de producción. Las limitaciones conocidas están seguidas como
-issues: iMIP, compartición de calendarios, edición de recurrencias en la web.
+[PLAN.md](PLAN.md). Las releases se publican desde tags `v*`: binarios
+estáticos para `linux/amd64` y `linux/arm64` con su suma, y una imagen
+multi-arch en `ghcr.io/gnacho/davcloud`. Cubierto por 40 tests de Go y 10 de la
+web, CI en cada push (test, lint, security, web e imagen de contenedor) y un
+ensayo de migración contra una copia de un volumen real de producción. Las
+limitaciones conocidas están seguidas como issues: iMIP, compartición de
+calendarios, edición de recurrencias en la web.
 
 ## Licencia
 
