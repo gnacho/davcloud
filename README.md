@@ -147,9 +147,12 @@ volume (the layout and metadata are byte-compatible both ways).
 
 ## Status
 
-In daily use as the DAV server behind the author's OpenCloud deployment; the
-soak period is running and the rollback drill is still pending, so treat it as
-software in active development. The phase list and what is left are in
+In daily use as the DAV server behind the author's OpenCloud deployment. The
+rollback drill passed on 2026-10-18: Radicale 3.5.3 served the same volume
+again, read every item davcloud had written (same UIDs and fields, same
+collection properties) and left the files untouched, so going back is a service
+switch. The soak period is still running, so treat it as software in active
+development. The phase list and what is left are in
 [PLAN.md](PLAN.md). Covered by 40 Go tests and 10 web tests, CI on every push
 (test/lint/security/web), and a migration dry run against a copy of a real
 production volume. Known limitations are tracked as issues: iMIP, calendar

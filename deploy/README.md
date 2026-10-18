@@ -165,6 +165,24 @@ calendarios y eventos escritos por davcloud (mismos items, mismo layout, y el
 component-set en formato string). Solo cuando este drill pase se puede dar el
 cambio por definitivo.
 
+Ejecutado y pasado el 18-Oct-2026 sobre el volumen de producción: Radicale 3.5.3
+arrancó sobre los mismos datos y sirvió los 5 items con el mismo UID y el mismo
+conjunto de campos, incluidas las props de colección; ninguno de los items
+borrados durante la fase con davcloud reapareció. La vuelta deja los items byte
+a byte intactos: lo único que añade Radicale es su caché
+`.Radicale.cache/item/`, que davcloud ignora.
+
+Dos trampas al verificar, medidas ese día:
+
+- Comparar los items **en disco**, no en la respuesta DAV. Radicale re-serializa
+  al servir (propiedades en orden alfabético y un CRLF final en las vCards:
+  187 -> 189 bytes) aunque no modifica los ficheros. davcloud sí sirve los items
+  byte a byte.
+- davcloud elige el endpoint por `X-Script-Name`: pedir un `.ics` con
+  `X-Script-Name: /carddav` devuelve 404 `dav: resource not found`, y el hash
+  del cuerpo del error parece una diferencia de datos. Usar la cabecera del tipo
+  correcto.
+
 ## 7. Restore del volumen (verificado)
 
 Procedimiento comprobado: extraer la copia, reponer propietario, comparar el
