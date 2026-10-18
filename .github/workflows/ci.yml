@@ -74,3 +74,20 @@ jobs:
         run: npm run test
       - name: build
         run: npm run build
+
+  # The Dockerfile ships to users from the release workflow, so it is built
+  # here on every push and pull request (single arch, nothing published) and
+  # the resulting image is asked for its version.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the image
+        run: |
+          docker build \
+            --build-arg VERSION=0.0.0-ci \
+            --build-arg COMMIT="$(git rev-parse --short HEAD)" \
+            --build-arg DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --tag davcloud:ci .
+      - name: The image runs and reports its version
+        run: docker run --rm davcloud:ci -version

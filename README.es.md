@@ -13,8 +13,9 @@ detrás de un despliegue de
 referencia trae Radicale exactamente así), pero funciona detrás de cualquier
 proxy que autentique e inyecte la identidad.
 
-Un binario estático (~7 MB), sin dependencias de runtime, sin base de datos,
-sin contenedores: el servidor y el volumen de datos son todo el despliegue.
+Un binario estático (~7 MB), sin dependencias de runtime, sin base de datos:
+el binario y el volumen de datos son todo el despliegue (también publicamos
+una imagen de contenedor, para quien la prefiera).
 
 ## Qué hace
 
@@ -90,8 +91,43 @@ volumen de datos, layout "multifilesystem" de Radicale
 
 ## Cómo instalarlo
 
-Requisitos: Go 1.24+ para compilar. `npm` solo si quieres la web UI. Sin
-base de datos ni dependencias de runtime.
+Para compilarlo necesitas Go 1.24+ (`npm` solo si quieres la web UI). Sin base
+de datos ni dependencias de runtime. Un binario de release o la imagen de
+contenedor ya se bastan solos.
+
+**Descargar una release** (las etiquetas van de `0.2` en `0.2`: `v0.2.0`,
+`v0.4.0`, ...):
+
+```bash
+curl -LO https://github.com/gnacho/davcloud/releases/latest/download/davcloud-linux-amd64
+curl -LO https://github.com/gnacho/davcloud/releases/latest/download/davcloud-linux-amd64.sha256
+sha256sum -c davcloud-linux-amd64.sha256
+chmod +x davcloud-linux-amd64
+./davcloud-linux-amd64 -version
+```
+
+En máquinas ARM usa `arm64` en lugar de `amd64`.
+
+**Contenedor**:
+
+```bash
+mkdir -p davcloud-data
+docker run -d --name davcloud \
+  --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:5232:5232 \
+  -v "$PWD/davcloud-data:/data" \
+  ghcr.io/gnacho/davcloud:latest \
+  -addr :5232 -data-dir /data -ui-dir /app/ui -dev-user alice
+curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND -H 'Depth: 0' \
+  http://127.0.0.1:5232/caldav/
+# 207
+```
+
+La imagen corre como uid 1000, de ahí `--user` con tus propios ids para que
+pueda escribir en el directorio montado. `-dev-user` es el atajo de
+desarrollo que se fía de toda petición como ese usuario; en producción la
+identidad llega en la cabecera `X-Remote-User` que inyecta el proxy, así que
+el puerto no debe ser alcanzable por nadie más.
 
 **Compilar**
 
