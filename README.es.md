@@ -72,6 +72,13 @@ volumen de datos, layout "multifilesystem" de Radicale
   Los metadatos de colección viven en los `.Radicale.props` propios de
   Radicale (mismas claves, incluido el string separado por comas del
   supported-calendar-component-set).
+- **Los nombres que gestiona el servidor están reservados**: un nombre que
+  empieza por punto (el `.Radicale.props` propio de cada colección, los ficheros
+  `.tmp-*` de las escrituras atómicas) o que acaba en tilde no existe para los
+  clientes. Un `PUT` sobre ese nombre responde 400 y `DELETE`/`GET` responden
+  404, así que ningún cliente puede romper una colección escribiendo encima de
+  sus metadatos o borrándolos. Radicale aplica la misma regla con
+  `pathutils.is_safe_filesystem_path_component`.
 - **La identidad es una cabecera**: se confía ciegamente en
   `X-Remote-User`, así que el puerto nunca debe ser alcanzable sin el proxy
   autenticador delante. En modo `-dav-root` el proxy elimina los prefijos

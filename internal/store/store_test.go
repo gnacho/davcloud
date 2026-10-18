@@ -232,3 +232,69 @@ func TestCreateCollectionRejectsExisting(t *testing.T) {
 		t.Error("collection still readable after delete")
 	}
 }
+
+// TestReservedNamesAreRefused mirrors Radicale's
+// pathutils.is_safe_filesystem_path_component: a collection's own metadata file
+// and the files an atomic write uses must never be reachable through the store
+// API, whichever call is used.
+func TestReservedNamesAreRefused(t *testing.T) {
+	root := t.TempDir()
+	s := New(root)
+	if err := s.EnsureUser("alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{PropsFile, ".hidden.ics", ".Radicale.cache", "trailing~"} {
+		if ValidName(name) {
+			t.Errorf("ValidName(%q) = true, want false", name)
+		}
+		if _, err := s.WriteItem("alice", "def-calendar", name, []byte("x")); err == nil {
+			t.Errorf("WriteItem(%q) succeeded, want an error", name)
+		}
+		if _, err := s.ReadItem("alice", "def-calendar", name); err == nil {
+			t.Errorf("ReadItem(%q) succeeded, want an error", name)
+		}
+		if err := s.DeleteItem("alice", "def-calendar", name); err == nil {
+			t.Errorf("DeleteItem(%q) succeeded, want an error", name)
+		}
+		if _, err := s.GetCollection("alice", name); err == nil {
+			t.Errorf("GetCollection(%q) succeeded, want an error", name)
+		}
+		if err := s.CreateCollection("alice", Collection{ID: name, Tag: "VCALENDAR"}); err == nil {
+			t.Errorf("CreateCollection(%q) succeeded, want an error", name)
+		}
+	}
+
+	// The metadata file of a live collection survives a delete attempt.
+	props := filepath.Join(root, "collection-root", "alice", "def-calendar", PropsFile)
+	before, err := os.ReadFile(props)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteItem("alice", "def-calendar", PropsFile); err == nil {
+		t.Fatal("DeleteItem on the metadata file reported success")
+	}
+	after, err := os.ReadFile(props)
+	if err != nil {
+		t.Fatalf("metadata file is gone after DeleteItem: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Error("metadata file changed")
+	}
+
+	// Hidden and reserved names are not listed, ordinary ones are.
+	if _, err := s.WriteItem("alice", "def-calendar", "e1.ics", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	hidden := filepath.Join(root, "collection-root", "alice", "def-calendar", ".hidden.ics")
+	if err := os.WriteFile(hidden, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.ListItems("alice", "def-calendar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0] != "e1.ics" {
+		t.Errorf("ListItems = %v, want [e1.ics]", items)
+	}
+}

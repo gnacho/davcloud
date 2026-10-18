@@ -114,6 +114,15 @@ func (h *Handler) resolve(r *http.Request) (*resource, error) {
 	if segs[0] != user {
 		return nil, errForbidden
 	}
+	// Names the server reserves for itself (the ".Radicale.props" metadata file
+	// of every collection and the ".tmp-*" files of atomic writes) do not exist
+	// as far as clients are concerned, which is how Radicale behaves too
+	// (pathutils.is_safe_filesystem_path_component in its filesystem storage).
+	for _, s := range segs[1:] {
+		if !store.ValidName(s) {
+			return nil, errNotFound
+		}
+	}
 	switch len(segs) {
 	case 1:
 	case 2:
@@ -145,6 +154,9 @@ func (h *Handler) resolveForCreate(r *http.Request) (*resource, error) {
 	segs := splitPath(h.internalPath(r))
 	if len(segs) != 2 || segs[0] != user {
 		return nil, &davError{code: http.StatusForbidden, msg: "dav: collections can only be created under the user home set"}
+	}
+	if !store.ValidName(segs[1]) {
+		return nil, errReservedName
 	}
 	if _, err := h.Store.GetCollection(user, segs[1]); err == nil {
 		return nil, &davError{code: http.StatusMethodNotAllowed, msg: "dav: collection already exists"}
@@ -269,6 +281,10 @@ func (e *davError) Error() string { return e.msg }
 var (
 	errForbidden = &davError{code: http.StatusForbidden, msg: "dav: access to another user's data is not allowed"}
 	errNotFound  = &davError{code: http.StatusNotFound, msg: "dav: resource not found"}
+	// errReservedName is the answer to a request that tries to create or write a
+	// name the server keeps for itself (leading dot, trailing tilde). Radicale
+	// answers a PUT with such an href with 400 as well.
+	errReservedName = &davError{code: http.StatusBadRequest, msg: "dav: names starting with a dot or ending with a tilde are reserved by the server"}
 )
 
 func writeError(w http.ResponseWriter, err error) {

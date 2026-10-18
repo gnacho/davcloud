@@ -1076,3 +1076,66 @@ func TestSpaFallbackStillWorks(t *testing.T) {
 		t.Errorf("spa fallback body = %q", body)
 	}
 }
+
+// TestServerManagedNamesAreUnreachable covers issue #38: no DAV request may
+// touch the ".Radicale.props" metadata file of a collection, because losing it
+// makes the whole collection disappear from the tree (404) with no way back.
+func TestServerManagedNamesAreUnreachable(t *testing.T) {
+	srv, dir := newTestServer(t)
+
+	resp, body := do(t, "PROPFIND", srv.URL+"/caldav/alice/", propfindBody, map[string]string{"Depth": "1"})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND home = %d, want 207: %s", resp.StatusCode, body)
+	}
+	props := filepath.Join(dir, "collection-root", "alice", "def-calendar", store.PropsFile)
+	before, err := os.ReadFile(props)
+	if err != nil {
+		t.Fatalf("metadata file missing before the requests: %v", err)
+	}
+
+	// A valid stream whose UID matches the reserved name must still be refused.
+	evil := strings.Replace(testICS, "UID:e1", "UID:"+store.PropsFile, 1)
+	resp, body = do(t, "PUT", srv.URL+"/caldav/alice/def-calendar/"+store.PropsFile, evil, map[string]string{"Content-Type": "text/calendar"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("PUT on the metadata file = %d, want 400: %s", resp.StatusCode, body)
+	}
+
+	resp, body = do(t, "DELETE", srv.URL+"/caldav/alice/def-calendar/"+store.PropsFile, "", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("DELETE on the metadata file = %d, want 404: %s", resp.StatusCode, body)
+	}
+
+	resp, body = do(t, "GET", srv.URL+"/caldav/alice/def-calendar/"+store.PropsFile, "", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET on the metadata file = %d, want 404: %s", resp.StatusCode, body)
+	}
+
+	// Hidden names are reserved for every object, not only for the metadata file.
+	resp, body = do(t, "PUT", srv.URL+"/caldav/alice/def-calendar/.hidden.ics", testICS, map[string]string{"Content-Type": "text/calendar"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("PUT on a hidden name = %d, want 400: %s", resp.StatusCode, body)
+	}
+
+	// A collection cannot take a reserved name either.
+	resp, body = do(t, "MKCALENDAR", srv.URL+"/caldav/alice/.reserved/", "", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("MKCALENDAR with a reserved name = %d, want 400: %s", resp.StatusCode, body)
+	}
+
+	// The metadata file survived, the collection still serves and the listing
+	// does not expose the reserved name.
+	after, err := os.ReadFile(props)
+	if err != nil {
+		t.Fatalf("metadata file is gone after the requests: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Error("metadata file was modified")
+	}
+	resp, body = do(t, "PROPFIND", srv.URL+"/caldav/alice/def-calendar/", propfindBody, map[string]string{"Depth": "1"})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Errorf("PROPFIND on the collection after the requests = %d, want 207: %s", resp.StatusCode, body)
+	}
+	if strings.Contains(body, store.PropsFile) {
+		t.Error("the listing exposes the metadata file")
+	}
+}

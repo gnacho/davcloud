@@ -67,6 +67,12 @@ data volume, Radicale "multifilesystem" layout
   indistinguishable from one written by Radicale - in both directions.
   Collection metadata lives in Radicale's own `.Radicale.props` files (same
   keys, including the comma separated supported-calendar-component-set).
+- **Server-managed names are reserved**: a name with a leading dot (a
+  collection's own `.Radicale.props`, the `.tmp-*` files of atomic writes) or a
+  trailing tilde does not exist as far as clients are concerned. `PUT` on such a
+  name answers 400 and `DELETE`/`GET` answer 404, so no client can break a
+  collection by writing over, or deleting, its metadata. Radicale enforces the
+  same rule through `pathutils.is_safe_filesystem_path_component`.
 - **Identity is a header**: `X-Remote-User` is trusted blindly, so the port
   must never be reachable without the authenticating proxy in front. In
   `-dav-root` mode the proxy strips the `/caldav`/`/carddav` prefixes and
