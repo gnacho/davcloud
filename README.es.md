@@ -153,9 +153,12 @@ el mismo volumen (layout y metadatos son byte-compatibles en ambos sentidos).
 
 ## Estado
 
-En uso diario como servidor DAV detrás del despliegue de OpenCloud del autor;
-el periodo de soak está en marcha y el drill de rollback sigue pendiente, así
-que es software en desarrollo activo. La lista de fases y lo que queda está en
+En uso diario como servidor DAV detrás del despliegue de OpenCloud del autor. El
+drill de rollback pasó el 18-Oct-2026: Radicale 3.5.3 sirvió el mismo volumen
+otra vez, leyó todo lo escrito por davcloud (mismos UID y campos, mismas props
+de colección) y no tocó los ficheros, así que volver atrás es un cambio de
+servicio. El periodo de soak sigue en marcha, así que es software en desarrollo
+activo. La lista de fases y lo que queda está en
 [PLAN.md](PLAN.md). Cubierto por 40 tests de Go y 10 de la web, CI en cada
 push (test/lint/security/web) y un ensayo de migración contra una copia de un
 volumen real de producción. Las limitaciones conocidas están seguidas como

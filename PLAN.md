@@ -5,10 +5,10 @@ sin que DAVx⁵, Thunderbird, iOS ni las extensiones web (opencloud-agenda,
 opencloud-contacts) noten la diferencia.
 
 Estado al 18-Oct-2026: **fases 0-4 completadas** (issues #1-#9 y #21 cerrados;
-davcloud es el servidor DAV de producción desde el 17-Oct) y **fase 5 en
-curso** (soak + drill de rollback, issue #22). **Nada de Docker**: el
-despliegue es un binario estático + systemd (ver `deploy/README.md`). Repo
-público desde el 18-Oct-2026, licencia AGPL-3.0.
+davcloud es el servidor DAV de producción desde el 17-Oct) y **fase 5 en curso**
+(soak en marcha; el **drill de rollback pasó el 18-Oct-2026**, issue #22).
+**Nada de Docker**: el despliegue es un binario estático + systemd (ver
+`deploy/README.md`). Repo público desde el 18-Oct-2026, licencia AGPL-3.0.
 
 ## Hecho
 
@@ -44,13 +44,19 @@ público desde el 18-Oct-2026, licencia AGPL-3.0.
 - **Ensayo de migración en seco**: copia real del volumen de producción
   montada en davcloud: lectura, escritura byte a byte y sync verificados con
   dos usuarios reales. El original quedó intacto.
+- **Drill de rollback** (issue #22, 18-Oct-2026, sobre el volumen de
+  producción): Radicale 3.5.3 arrancado sobre los mismos datos, con los 5 items
+  servidos con el mismo UID y el mismo conjunto de campos, las props de
+  colección leídas y ninguno de los items borrados reapareciendo; vuelta a
+  davcloud con los items byte a byte intactos (Radicale solo añade su
+  `.Radicale.cache/item/`).
 
 ## Pendiente (issues)
 
-- **#22 - Fase 5: soak + drill de rollback** (en curso desde el 17-Oct:
-  davcloud es el único servidor DAV; 1-2 semanas de uso diario, después
-  arrancar Radicale sobre el mismo volumen y verificar que lee todo lo escrito
-  por davcloud; solo entonces retirar Radicale).
+- **#22 - Fase 5: soak + drill de rollback** (soak en curso desde el 17-Oct:
+  davcloud es el único servidor DAV; el drill ya pasó el 18-Oct-2026, ver
+  arriba). Queda el uso diario con datos reales y, solo entonces, retirar
+  Radicale del contenedor.
 - **Edición de recurrencias en la web UI**: sigue siendo un TODO documentado
   en `web/src/lib/ics.ts`.
 - **Fase 6 - paridad extendida (opcional, por necesidad)**: iMIP
