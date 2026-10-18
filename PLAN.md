@@ -1,12 +1,14 @@
 # PLAN - davcloud: de esqueleto a reemplazo de Radicale
 
-Objetivo: sustituir Radicale (binario + systemd en el CT) por davcloud sin
-que DAVx⁵, Thunderbird, iOS ni las extensiones web (opencloud-agenda,
+Objetivo: sustituir Radicale (binario + systemd en un contenedor) por davcloud
+sin que DAVx⁵, Thunderbird, iOS ni las extensiones web (opencloud-agenda,
 opencloud-contacts) noten la diferencia.
 
-Estado al 17-Oct-2026: **fases 0-3 completadas** (issues #1-#9 cerrados) y
-**nada de Docker**: el despliegue es un binario estático + systemd (ver
-`deploy/README.md`).
+Estado al 18-Oct-2026: **fases 0-4 completadas** (issues #1-#9 y #21 cerrados;
+davcloud es el servidor DAV de producción desde el 17-Oct) y **fase 5 en
+curso** (soak + drill de rollback, issue #22). **Nada de Docker**: el
+despliegue es un binario estático + systemd (ver `deploy/README.md`). Repo
+público desde el 18-Oct-2026, licencia AGPL-3.0.
 
 ## Hecho
 
@@ -27,31 +29,33 @@ Estado al 17-Oct-2026: **fases 0-3 completadas** (issues #1-#9 cerrados) y
 - **Recurrencias** (PR #13): caracterización: go-webdav YA expande
   RRULE/RDATE/EXDATE en los time-ranges; tolerancia a RRULE rotas (fallback a
   evento simple) y TZID sin VTIMEZONE verificado.
-- **Contrato real de producción** (PR #15): verificado read-only contra el CT:
-  el proxy elimina el prefijo y manda `X-Script-Name` (→ modo `-dav-root`);
-  el `.Radicale.props` real guarda el component-set como string (→ formato
-  compatible en ambos sentidos).
+- **Contrato real de producción** (PR #15): verificado read-only contra el
+  despliegue real: el proxy elimina el prefijo y manda `X-Script-Name`
+  (→ modo `-dav-root`); el `.Radicale.props` real guarda el component-set
+  como string (→ formato compatible en ambos sentidos).
 - **Extras**: CI de 4 jobs (PR #25), binario versionado (PR #26), README
   bilingüe (PR #17), licencia AGPL-3.0 (PR #14), sin Docker (PR #27).
-- **Ensayo de migración en seco**: copia real del volumen del CT montada en
-  davcloud: lectura, escritura byte a byte y sync verificados con dos
-  usuarios reales. El CT quedó intacto.
+- **Fase 4 - migración de producción** (issue #21, 17-Oct-2026): swap de
+  systemd en el contenedor según `deploy/README.md`, con backup previo,
+  verificado con la UI y con DAV por curl (PROPFIND con hrefs prefijados,
+  sync-collection, ciclo PUT/GET/DELETE). Radicale queda parado y deshabilitado.
+- **Web UI**: vCard 3.0 al escribir y tests de los helpers (PR #30), vista de
+  tarjetas y arreglos de la libreta (PRs #21, #33).
+- **Ensayo de migración en seco**: copia real del volumen de producción
+  montada en davcloud: lectura, escritura byte a byte y sync verificados con
+  dos usuarios reales. El original quedó intacto.
 
 ## Pendiente (issues)
 
-- **#21 - Fase 4: migración de producción** (swap systemd en el CT 4125
-  según `deploy/README.md`; backup primero; verificación con la UI y DAVx⁵).
-- **#22 - Fase 5: soak + drill de rollback** (1-2 semanas con davcloud como
-  único servidor DAV; después arrancar Radicale sobre el mismo volumen y
-  verificar que lee todo lo escrito por davcloud; solo entonces retirar
-  Radicale).
-- **#23, #24 - Web UI menores**: vCard 3.0 en vez de 4.0 y tests de los
-  helpers (la edición de recurrencias en la UI sigue siendo un TODO
-  documentado en `web/src/lib/ics.ts`).
+- **#22 - Fase 5: soak + drill de rollback** (en curso desde el 17-Oct:
+  davcloud es el único servidor DAV; 1-2 semanas de uso diario, después
+  arrancar Radicale sobre el mismo volumen y verificar que lee todo lo escrito
+  por davcloud; solo entonces retirar Radicale).
+- **Edición de recurrencias en la web UI**: sigue siendo un TODO documentado
+  en `web/src/lib/ics.ts`.
 - **Fase 6 - paridad extendida (opcional, por necesidad)**: iMIP
   (invitaciones por email) y compartición de calendarios (requiere ACLs que
   el proxy no proporciona). Radicale tampoco cubre bien ninguno de los dos.
-- Publicar o no el repo en GitHub: decisión aparte (hoy privado).
 
 ## Regla de oro
 
