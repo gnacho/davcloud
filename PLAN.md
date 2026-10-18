@@ -7,8 +7,9 @@ opencloud-contacts) noten la diferencia.
 Estado al 18-Oct-2026: **fases 0-4 completadas** (issues #1-#9 y #21 cerrados;
 davcloud es el servidor DAV de producción desde el 17-Oct) y **fase 5 en curso**
 (soak en marcha; el **drill de rollback pasó el 18-Oct-2026**, issue #22).
-**Nada de Docker**: el despliegue es un binario estático + systemd (ver
-`deploy/README.md`). Repo público desde el 18-Oct-2026, licencia AGPL-3.0.
+El despliegue propio **no usa Docker**: binario estático + systemd (ver
+`deploy/README.md`); la imagen de contenedor existe para quien prefiera ese
+camino (fase 6). Repo público desde el 18-Oct-2026, licencia AGPL-3.0.
 
 ## Hecho
 
@@ -50,8 +51,22 @@ davcloud es el servidor DAV de producción desde el 17-Oct) y **fase 5 en curso*
   colección leídas y ninguno de los items borrados reapareciendo; vuelta a
   davcloud con los items byte a byte intactos (Radicale solo añade su
   `.Radicale.cache/item/`).
+- **Endurecimiento** (issues #38 y #39, 18-Oct-2026): los nombres gestionados
+  por el servidor quedan fuera del alcance de los clientes DAV (404 al leer,
+  400 al escribir, la misma semántica que Radicale) y hay límites explícitos de
+  tamaño (petición y objeto, con `max-resource-size` anunciado y timeouts de
+  HTTP); el tope de expansión de recurrencias deja acotadas las consultas
+  patológicas (un `calendar-query` `SECONDLY` que antes no terminaba en 25 s
+  responde 207 en 0,0016 s). Desplegado en producción el mismo día, con el
+  rechazo verificado en vivo.
 
 ## Pendiente (issues)
+
+- **#43 - Fase 6: distribución** (abierta el 18-Oct-2026): binarios
+  `linux/amd64` y `linux/arm64` por tag e imagen multi-arch en
+  `ghcr.io/gnacho/davcloud`, para que probarlo no exija toolchain. El
+  despliegue propio no cambia. Versiones de `0.2` en `0.2` (`v0.2.0`,
+  `v0.4.0`, ...).
 
 - **#22 - Fase 5: soak + drill de rollback** (soak en curso desde el 17-Oct:
   davcloud es el único servidor DAV; el drill ya pasó el 18-Oct-2026, ver
@@ -59,7 +74,7 @@ davcloud es el servidor DAV de producción desde el 17-Oct) y **fase 5 en curso*
   Radicale del contenedor.
 - **Edición de recurrencias en la web UI**: sigue siendo un TODO documentado
   en `web/src/lib/ics.ts`.
-- **Fase 6 - paridad extendida (opcional, por necesidad)**: iMIP
+- **Fase 7 - paridad extendida (opcional, por necesidad)**: iMIP
   (invitaciones por email) y compartición de calendarios (requiere ACLs que
   el proxy no proporciona). Radicale tampoco cubre bien ninguno de los dos.
 

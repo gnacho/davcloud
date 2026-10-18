@@ -57,7 +57,16 @@ sha256sum ./radicale-vol-<stamp>.tgz    # compara con el sha256 sacado dentro de
 
 ## 1. Binario estático
 
-En cualquier máquina con Go (el CT no necesita toolchain):
+Sin toolchain en el CT. Puedes descargar el binario de la release en vez de
+compilarlo (comprueba el `sha256`, que va en el mismo asset):
+
+```
+curl -LO https://github.com/gnacho/davcloud/releases/latest/download/davcloud-linux-amd64
+curl -LO https://github.com/gnacho/davcloud/releases/latest/download/davcloud-linux-amd64.sha256
+sha256sum -c davcloud-linux-amd64.sha256
+```
+
+O compilarlo en cualquier máquina con Go:
 
 ```
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \

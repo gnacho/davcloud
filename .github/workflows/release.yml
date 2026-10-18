@@ -1,0 +1,75 @@
+name: release
+
+# Tagging is what publishes: a v* tag on main produces a GitHub release with
+# the static binaries for linux/amd64 and linux/arm64 (CGO disabled, version
+# stamped) and a multi-arch image at ghcr.io/<owner>/davcloud.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release and upload the binaries
+  packages: write # push the image to GHCR
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build the static binaries
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          ldflags="-s -w -X main.version=${version} -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            name="davcloud-linux-${arch}"
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
+              go build -trimpath -ldflags "${ldflags}" -o "dist/${name}" ./cmd/server
+            (cd dist && sha256sum "${name}" > "${name}.sha256")
+          done
+          ./dist/davcloud-linux-amd64 -version
+          ls -l dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/davcloud-linux-amd64 \
+            dist/davcloud-linux-amd64.sha256 \
+            dist/davcloud-linux-arm64 \
+            dist/davcloud-linux-arm64.sha256
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the multi-arch image
+        run: |
+          set -euo pipefail
+          image="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          version="${GITHUB_REF_NAME#v}"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="${version}" \
+            --build-arg COMMIT="$(git rev-parse --short HEAD)" \
+            --build-arg DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --tag "${image}:${GITHUB_REF_NAME}" \
+            --tag "${image}:latest" \
+            --push .

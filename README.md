@@ -12,8 +12,9 @@ same header a reverse proxy injects. Designed to sit behind an
 full-stack reference ships Radicale exactly like this), but it works behind
 any proxy that authenticates and injects the identity.
 
-One static binary (~7 MB), no runtime dependencies, no database, no
-containers: the server and the data volume are the whole deployment.
+One static binary (~7 MB), no runtime dependencies, no database: the binary
+and the data volume are the whole deployment (a container image is published
+as well, for those who prefer one).
 
 ## What it does
 
@@ -84,8 +85,42 @@ data volume, Radicale "multifilesystem" layout
 
 ## How to install it
 
-Requirements: Go 1.24+ to build. `npm` only if you want the web UI. No
-database, no runtime dependencies.
+To build it you need Go 1.24+ (plus `npm` for the web UI). No database, no
+runtime dependencies. A released binary or the container image is
+self-contained.
+
+**Download a release** (tags move in steps of `0.2`: `v0.2.0`, `v0.4.0`, ...):
+
+```bash
+curl -LO https://github.com/gnacho/davcloud/releases/latest/download/davcloud-linux-amd64
+curl -LO https://github.com/gnacho/davcloud/releases/latest/download/davcloud-linux-amd64.sha256
+sha256sum -c davcloud-linux-amd64.sha256
+chmod +x davcloud-linux-amd64
+./davcloud-linux-amd64 -version
+```
+
+Use `arm64` instead of `amd64` on ARM machines.
+
+**Container**:
+
+```bash
+mkdir -p davcloud-data
+docker run -d --name davcloud \
+  --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:5232:5232 \
+  -v "$PWD/davcloud-data:/data" \
+  ghcr.io/gnacho/davcloud:latest \
+  -addr :5232 -data-dir /data -ui-dir /app/ui -dev-user alice
+curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND -H 'Depth: 0' \
+  http://127.0.0.1:5232/caldav/
+# 207
+```
+
+The image runs as uid 1000, hence `--user` with your own ids so that it can
+write into the bind-mounted directory. `-dev-user` is the development shortcut
+that trusts every request as that user; in production the identity comes from
+the `X-Remote-User` header injected by the proxy, so the port must stay
+unreachable for anybody else.
 
 **Build**
 
