@@ -337,6 +337,72 @@ func TestWellKnownRedirects(t *testing.T) {
 	}
 }
 
+// TestWellKnownRedirectsInDavRootMode covers issue #47: discovery must keep
+// working in the mode the OpenCloud proxy uses, where the DAV handler owns
+// every path and would otherwise claim the well-known paths as a collection.
+func TestWellKnownRedirectsInDavRootMode(t *testing.T) {
+	dir := t.TempDir()
+	st := store.New(dir)
+	srv := httptest.NewServer(newHandler(st, filepath.Join(dir, "missing-ui"), "alice", true, defaultLimits()))
+	t.Cleanup(srv.Close)
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	for _, tc := range []struct{ path, want string }{
+		{"/.well-known/caldav", "/caldav/alice/"},
+		{"/.well-known/carddav", "/carddav/alice/"},
+	} {
+		resp, err := client.Get(srv.URL + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMovedPermanently {
+			t.Errorf("GET %s = %d, want 301", tc.path, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Location"); got != tc.want {
+			t.Errorf("GET %s redirected to %q, want %q", tc.path, got, tc.want)
+		}
+	}
+
+	// The redirect target must still be served by the catch-all DAV handler.
+	resp, body := do(t, "PROPFIND", srv.URL+"/caldav/alice/", "", map[string]string{"Depth": "0"})
+	if resp.StatusCode != http.StatusMultiStatus {
+		t.Fatalf("PROPFIND /caldav/alice/ in dav-root mode = %d, want 207: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "current-user-principal") {
+		t.Errorf("PROPFIND body has no current-user-principal: %s", body)
+	}
+}
+
+// TestOptionsNeedsNoIdentity covers issue #48: the OpenCloud proxy does not
+// authenticate OPTIONS, so capability probing must work without a user while
+// every method that touches data keeps requiring one.
+func TestOptionsNeedsNoIdentity(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(newHandler(store.New(dir), filepath.Join(dir, "missing-ui"), "", true, defaultLimits()))
+	t.Cleanup(srv.Close)
+
+	resp, body := do(t, "OPTIONS", srv.URL+"/caldav/", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("OPTIONS without identity = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if dav := resp.Header.Get("DAV"); !strings.Contains(dav, "calendar-access") {
+		t.Errorf("DAV header = %q, want calendar-access", dav)
+	}
+	if allow := resp.Header.Get("Allow"); !strings.Contains(allow, "REPORT") || !strings.Contains(allow, "PROPFIND") {
+		t.Errorf("Allow header = %q, want the DAV method list", allow)
+	}
+
+	for _, method := range []string{"GET", "PROPFIND", "REPORT", "PUT", "DELETE"} {
+		resp, body := do(t, method, srv.URL+"/caldav/alice/", "", map[string]string{"Depth": "0"})
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s without identity = %d, want 401: %s", method, resp.StatusCode, body)
+		}
+	}
+}
+
 // TestPutGetAreByteIdentical is the core of issue #6: the file on disk must
 // be exactly the request body (like Radicale, which stores the item as sent)
 // and GET must serve exactly those bytes. That is what keeps the data volume
