@@ -24,6 +24,13 @@ func User(ctx context.Context) string {
 
 // Middleware extracts the identity. In dev mode (devUser != "") the header is
 // ignored and the given user is forced.
+//
+// OPTIONS is the one exception: it is capability discovery, answered with the
+// compliance headers and an Allow list that are identical for every user and
+// touch no data, while some proxies (OpenCloud's) do not authenticate that
+// method and therefore never set X-Remote-User. Rejecting it made every
+// capability probe look like an authentication failure. Every method that
+// reads or writes data still requires the identity.
 func Middleware(devUser string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +38,7 @@ func Middleware(devUser string) func(http.Handler) http.Handler {
 			if user == "" {
 				user = r.Header.Get("X-Remote-User")
 			}
-			if user == "" {
+			if user == "" && r.Method != http.MethodOptions {
 				http.Error(w, "davcloud: missing identity (OpenCloud proxy must set X-Remote-User)", http.StatusUnauthorized)
 				return
 			}
