@@ -327,7 +327,7 @@ func TestWellKnownRedirects(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusMovedPermanently {
 			t.Errorf("GET %s = %d, want 301", tc.path, resp.StatusCode)
 		}
@@ -357,7 +357,7 @@ func TestWellKnownRedirectsInDavRootMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusMovedPermanently {
 			t.Errorf("GET %s = %d, want 301", tc.path, resp.StatusCode)
 		}
