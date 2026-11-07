@@ -96,6 +96,14 @@ func newHandler(st *store.Store, uiDir, devUser string, davRoot bool, lim limits
 
 	mux := http.NewServeMux()
 	if davRoot {
+		// RFC 6764 discovery does not depend on how the DAV endpoints are
+		// mounted. The OpenCloud proxy forwards /.well-known/caldav and
+		// /.well-known/carddav here with X-Remote-User already resolved, and a
+		// client that is only given a hostname asks these paths before any
+		// other. Without them the catch-all below treats the path as
+		// /<user>/<collection> and rejects it as another user's data.
+		mux.Handle("/.well-known/caldav", mw(wellKnownHandler("/caldav")))
+		mux.Handle("/.well-known/carddav", mw(wellKnownHandler("/carddav")))
 		// Behind the OpenCloud proxy every path is DAV and the only signal
 		// telling calendars from address books is X-Script-Name, which the
 		// proxy sets to /caldav or /carddav.
